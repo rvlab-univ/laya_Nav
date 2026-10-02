@@ -81,7 +81,12 @@ class DualVLNSystem1(nn.Module):
             config = argparse.Namespace(**json.load(f))
         model = cls(config)
         model.model.load_state_dict(torch.load(os.path.join(path, WEIGHTS_NAME), map_location="cpu"))
-        return model.to(device=device, dtype=dtype).eval()
+        model = model.to(device=device, dtype=dtype).eval()
+        # the full model creates these with torch.FloatTensor, so they stay fp32 under from_pretrained(bf16);
+        # normalizing in bf16 instead shifts the trajectories (~0.1)
+        model._resnet_mean = model._resnet_mean.float()
+        model._resnet_std = model._resnet_std.float()
+        return model
 
 
 def export_system1(src: str, out: str):
@@ -124,7 +129,12 @@ def verify(src: str, out: str, device="cuda"):
     b = s1.generate_traj(lat, imgs, deps)
     torch.manual_seed(1)
     c = s1.generate_traj(full.get_model().cond_projector(lat), imgs, deps, latents_projected=True)
-    print(f"max |full - standalone| = {(a - b).abs().max().item():.3e}, projected path = {(a - c).abs().max().item():.3e}")
+    torch.manual_seed(1)
+    a2 = full.generate_traj(lat, imgs, deps)  # run-to-run noise of the GPU kernels, for reference
+    print(f"trajectory scale max|full| = {a.abs().max().item():.3e}")
+    print(f"max |full - full (rerun)|  = {(a - a2).abs().max().item():.3e}")
+    print(f"max |full - standalone|    = {(a - b).abs().max().item():.3e}")
+    print(f"max |full - standalone, projected latents| = {(a - c).abs().max().item():.3e}")
 
 
 if __name__ == "__main__":

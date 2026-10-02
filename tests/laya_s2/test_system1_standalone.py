@@ -49,6 +49,9 @@ def test_export_roundtrip_and_projected_latents(tmp_path):
     export_system1(str(src), str(out))
     s1 = DualVLNSystem1.from_pretrained(str(out), dtype=torch.float32)
     assert not any(k.startswith(("layers.", "visual.")) for k in torch.load(out / "system1.pt"))
+    s1_bf16 = DualVLNSystem1.from_pretrained(str(out), dtype=torch.bfloat16)
+    assert s1_bf16.get_model().traj_dit.dtype == torch.bfloat16
+    assert s1_bf16._resnet_mean.dtype == s1_bf16._resnet_std.dtype == torch.float32  # as in the full model
 
     lat = torch.randn(1, 4, 3584)
     imgs = torch.rand(1, 2, 224, 224, 3)
