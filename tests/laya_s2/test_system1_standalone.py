@@ -65,3 +65,12 @@ def test_export_roundtrip_and_projected_latents(tmp_path):
     assert a.shape == (4, 32, 3)
     torch.testing.assert_close(a, b)
     torch.testing.assert_close(a, c)
+
+    # verify() diagnostics run on the same objects (full model stand-in: the reference module)
+    from internnav.model.basemodel.internvla_n1.system1_standalone import (
+        _compare_stages,
+        _compare_weights,
+    )
+
+    _compare_weights(ref, s1, str(out))
+    _compare_stages(ref, s1, lat, imgs)
