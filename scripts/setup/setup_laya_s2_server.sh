@@ -27,6 +27,8 @@ setup_env() {
     pip install -e third_party/habitat-lab/habitat-lab -e third_party/habitat-lab/habitat-baselines
     pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
     git submodule update --init --recursive
+    # prebuilt flash-attn (building it needs nvcc / CUDA_HOME, which servers often lack)
+    pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp39-cp39-linux_x86_64.whl
     pip install -e .[habitat]
     # training data loading (lerobot parquet) and downloads
     pip install pandas pyarrow "huggingface_hub[cli]"
