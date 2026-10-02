@@ -77,6 +77,7 @@ download_train_data() {
 }
 
 check() {
+    set +e  # report every item, even after a missing one
     echo "checkpoints:"; ls checkpoints/InternVLA-N1-DualVLN/config.json checkpoints/depth_anything_v2_metric_hypersim_vits.pth
     echo "eval episodes:"; ls data/vln_ce/raw_data/r2r/val_unseen/val_unseen.json.gz
     echo "mp3d_ce scenes: $(ls -d data/scene_data/mp3d_ce/mp3d/*/ 2>/dev/null | wc -l) (expected under data/scene_data/mp3d_ce/mp3d/<scan>/)"
