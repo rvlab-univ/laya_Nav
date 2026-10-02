@@ -1,3 +1,5 @@
+import os
+
 from internnav.configs.agent import AgentCfg
 from internnav.configs.evaluator import EnvCfg, EvalCfg
 
@@ -21,6 +23,8 @@ eval_cfg = EvalCfg(
         env_type='habitat',
         env_settings={
             'config_path': 'scripts/eval/configs/vln_r2r.yaml',
+            # EVAL_EPISODES=N: fixed random subset of N episodes (same for every model); unset = all
+            'episode_subset': int(os.environ.get('EVAL_EPISODES', 0)) or None,
         },
     ),
     eval_type='habitat_vln',

@@ -1,5 +1,6 @@
 import json
 import os
+import random
 from typing import Any, Dict, List, Optional
 
 from internnav.configs.evaluator import EnvCfg, TaskCfg
@@ -47,9 +48,16 @@ class HabitatEnv(base.Env):
         """
         all_episodes = []
 
+        episodes = list(self._env.episodes)
+        # optional fixed random subset (same seed -> same episodes for every model / rank count)
+        subset = self.env_config.env_settings.get('episode_subset')
+        if subset:
+            episodes.sort(key=lambda e: (e.scene_id, int(e.episode_id)))
+            episodes = random.Random(0).sample(episodes, min(int(subset), len(episodes)))
+
         # group episodes by scene
         scene_episode_dict: Dict[str, List[Any]] = {}
-        for episode in self._env.episodes:
+        for episode in episodes:
             scene_episode_dict.setdefault(episode.scene_id, []).append(episode)
 
         # load done_res

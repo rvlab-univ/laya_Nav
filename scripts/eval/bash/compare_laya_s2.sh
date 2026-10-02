@@ -1,10 +1,10 @@
 #!/bin/bash
 # DualVLN (Qwen2.5-VL-7B System 2) vs Laya-S2 (lightweight System 2), same System 1 / episodes / metrics.
 #   bash scripts/eval/bash/compare_laya_s2.sh            # R2R val-unseen (vln_r2r.yaml)
-#   NPROC=4 bash scripts/eval/bash/compare_laya_s2.sh
+#   EVAL_EPISODES=300 bash scripts/eval/bash/compare_laya_s2.sh   # same random 300 episodes for both models
 set -e
 
-NPROC=${NPROC:-8}
+NPROC=${NPROC:-$(python -c "import torch; print(torch.cuda.device_count())")}  # all visible GPUs
 DUALVLN=${DUALVLN:-checkpoints/InternVLA-N1-DualVLN}
 SYSTEM1=${SYSTEM1:-checkpoints/DualVLN-System1}
 mkdir -p logs

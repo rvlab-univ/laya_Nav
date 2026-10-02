@@ -210,3 +210,38 @@ def test_load_vln_samples_from_lerobot_layout(tmp_path, monkeypatch):
     assert kinds.count((1, 0)) == 2 and kinds.count((2, 9)) == 10
     g = next(s for s in samples if s["kind"] == GOAL)
     assert g["goal"] == [64, 96] and g["video"].endswith("17DRP5sb8fy/videos/chunk-000")
+
+
+def test_habitat_episode_subset_is_shared_across_ranks(tmp_path):
+    """EVAL_EPISODES subset: same episodes for every model, disjoint and complete across ranks."""
+    import types
+
+    import importlib
+    import os
+    import sys
+
+    try:
+        habitat_env = importlib.import_module("internnav.env.habitat_env")
+    except ModuleNotFoundError:  # internnav.env/__init__ pulls in server deps (uvicorn, ...); load the package dir only
+        import internnav
+
+        for k in [k for k in sys.modules if k.startswith("internnav.env")]:
+            del sys.modules[k]
+        pkg = types.ModuleType("internnav.env")
+        pkg.__path__ = [os.path.join(os.path.dirname(internnav.__file__), "env")]
+        sys.modules["internnav.env"] = pkg
+        habitat_env = importlib.import_module("internnav.env.habitat_env")
+    eps = [types.SimpleNamespace(scene_id=f"mp3d/s{i % 7}/s{i % 7}.glb", episode_id=str(i)) for i in range(200)]
+
+    def make(rank, world, subset):
+        env = habitat_env.HabitatEnv.__new__(habitat_env.HabitatEnv)
+        env._env = types.SimpleNamespace(episodes=list(reversed(eps)) if rank % 2 else eps)  # order must not matter
+        env.env_config = types.SimpleNamespace(env_settings={"episode_subset": subset})
+        env.rank, env.world_size, env.output_path = rank, world, str(tmp_path)
+        return {e.episode_id for e in env.generate_episodes()}
+
+    one = make(0, 1, 50)
+    assert len(one) == 50
+    shards = [make(r, 4, 50) for r in range(4)]
+    assert set().union(*shards) == one and sum(len(s) for s in shards) == 50
+    assert len(make(0, 1, None)) == 200
