@@ -51,7 +51,9 @@ def test_export_roundtrip_and_projected_latents(tmp_path):
     assert not any(k.startswith(("layers.", "visual.")) for k in torch.load(out / "system1.pt"))
     s1_bf16 = DualVLNSystem1.from_pretrained(str(out), dtype=torch.bfloat16)
     assert s1_bf16.get_model().traj_dit.dtype == torch.bfloat16
-    assert s1_bf16._resnet_mean.dtype == s1_bf16._resnet_std.dtype == torch.float32  # as in the full model
+    # exact fp32 values, as the full model has them (not bf16-rounded)
+    torch.testing.assert_close(s1_bf16._resnet_mean, ref._resnet_mean, rtol=0, atol=0)
+    torch.testing.assert_close(s1_bf16._resnet_std, ref._resnet_std, rtol=0, atol=0)
 
     lat = torch.randn(1, 4, 3584)
     imgs = torch.rand(1, 2, 224, 224, 3)
@@ -74,3 +76,4 @@ def test_export_roundtrip_and_projected_latents(tmp_path):
 
     _compare_weights(ref, s1, str(out))
     _compare_stages(ref, s1, lat, imgs)
+    _compare_stages(s1_bf16, s1_bf16, lat.bfloat16(), imgs.bfloat16())  # bf16 path, as on the server

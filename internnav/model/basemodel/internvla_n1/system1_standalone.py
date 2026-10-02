@@ -82,10 +82,10 @@ class DualVLNSystem1(nn.Module):
         model = cls(config)
         model.model.load_state_dict(torch.load(os.path.join(path, WEIGHTS_NAME), map_location="cpu"))
         model = model.to(device=device, dtype=dtype).eval()
-        # the full model creates these with torch.FloatTensor, so they stay fp32 under from_pretrained(bf16);
-        # normalizing in bf16 instead shifts the trajectories (~0.1)
-        model._resnet_mean = model._resnet_mean.float()
-        model._resnet_std = model._resnet_std.float()
+        # the full model creates these with torch.FloatTensor, so they stay exact fp32 under from_pretrained(bf16);
+        # recreate them (casting back from bf16 would keep the rounded values and shift the trajectories)
+        for name, value in (("_resnet_mean", _RESNET_MEAN), ("_resnet_std", _RESNET_STD)):
+            setattr(model, name, torch.FloatTensor(value).view(1, 1, 3, 1, 1).to(device))
         return model
 
 
@@ -151,8 +151,9 @@ def _compare_stages(full, s1, lat, imgs):
         proj = gm.cond_projector(lat)
         g = torch.Generator(device=lat.device).manual_seed(0)
         noisy = torch.randn(1, 32, 3, generator=g, device=lat.device, dtype=lat.dtype)
-        h = gm.action_encoder(noisy) + gm.pos_encoding(torch.arange(32, device=lat.device)[None])
-        t = gm.noise_scheduler.timesteps[:1].to(lat.device)
+        h = gm.action_encoder(noisy)
+        h += gm.pos_encoding(torch.arange(32, device=lat.device)[None])  # in place, keeps the dtype (as generate_traj)
+        t = gm.noise_scheduler.timesteps[:1].to(lat.device, torch.long)
         v = gm.action_decoder(gm.traj_dit(x=h, timestep=t, z_latents=torch.cat([tok, proj], 1)))
         return dict(normalized_input=xn, rgb_features=feat, memory_tokens=tok, cond_projector=proj, dit_velocity=v)
 
