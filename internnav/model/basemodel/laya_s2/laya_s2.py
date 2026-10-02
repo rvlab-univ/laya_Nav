@@ -342,5 +342,10 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
         acc_goal=correct[is_goal].float().mean() if is_goal.any() else zero,
         acc_action=correct[~is_goal].float().mean() if (~is_goal).any() else zero,
         latent_cos=lat_cos,
+        # sample counts, so that evaluation can weight the subset metrics correctly
+        n=logits.new_tensor(float(B)),
+        n_goal=is_goal.sum().float(),
+        n_action=(~is_goal).sum().float(),
+        n_lat=lat_mask.sum().float(),
     )
     return loss, stats

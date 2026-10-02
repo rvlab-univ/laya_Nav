@@ -85,21 +85,30 @@ def run(model, batch, weights):
     return compute_loss(model.module if isinstance(model, DDP) else model, out, batch, weights)
 
 
+# each metric is averaged over the samples it is defined on
+METRIC_WEIGHT = dict(acc_goal="n_goal", l_off="n_goal", acc_action="n_action", l_lat="n_lat", latent_cos="n_lat")
+
+
 @torch.no_grad()
 def evaluate(model, loader, weights, device):
     model.eval()
-    tot, n = {}, 0
+    tot = {}
     for batch in loader:
         with torch.autocast("cuda", dtype=torch.bfloat16):
             _, stats = run(model, to_device(batch, device), weights)
         for k, v in stats.items():
-            tot[k] = tot.get(k, 0.0) + float(v)
-        n += 1
+            if k.startswith("n"):
+                tot[k] = tot.get(k, 0.0) + float(v)
+            else:
+                w = float(stats[METRIC_WEIGHT.get(k, "n")])
+                tot[k] = tot.get(k, 0.0) + float(v) * w
     model.train()
-    t = torch.tensor([tot.get(k, 0.0) for k in sorted(tot)] + [n], device=device, dtype=torch.float64)
+    keys = sorted(tot)
+    t = torch.tensor([tot[k] for k in keys], device=device, dtype=torch.float64)
     if dist.is_initialized():
         dist.all_reduce(t)
-    return {k: (t[i] / max(t[-1], 1)).item() for i, k in enumerate(sorted(tot))}
+    tot = dict(zip(keys, t.tolist()))
+    return {k: v / max(tot[METRIC_WEIGHT.get(k, "n")], 1) for k, v in tot.items() if not k.startswith("n")}
 
 
 def lr_lambda(step, total, warmup):
@@ -211,7 +220,7 @@ def main():
             sched.step()
             step += 1
             if main_proc and step % args.log_every == 0:
-                msg = " ".join(f"{k}={float(v):.4f}" for k, v in stats.items())
+                msg = " ".join(f"{k}={float(v):.4f}" for k, v in stats.items() if not k.startswith("n"))
                 print(f"[ep {epoch} step {step}/{total} {time.time() - t0:.0f}s lr={sched.get_last_lr()[-1]:.2e}] {msg}", flush=True)
             if step % args.save_every == 0 or step >= total:
                 val = evaluate(ddp, val_dl, weights, device)
