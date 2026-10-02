@@ -33,6 +33,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
 from internnav.configs.evaluator import EvalCfg
 from internnav.evaluator import DistributedEvaluator, Evaluator
+from internnav.habitat_extensions.vln.timing import EpisodeTimers
 from internnav.habitat_extensions.vln.utils import (
     get_axis_align_matrix,
     get_intrinsic_matrix,
@@ -109,11 +110,17 @@ class HabitatVLNEvaluator(DistributedEvaluator):
         self.vis_debug = bool(getattr(self.model_args, "vis_debug", False))
         self.vis_debug_path = getattr(self.model_args, "vis_debug_path", os.path.join(self.output_path, "vis_debug"))
 
-        processor = AutoProcessor.from_pretrained(self.model_args.model_path)
-        processor.tokenizer.padding_side = 'left'
-
         device = torch.device(f"cuda:{self.local_rank}")
-        if self.model_args.mode == 'dual_system':
+        processor = None
+        if self.model_args.mode in ('dual_system', 'system2'):
+            processor = AutoProcessor.from_pretrained(self.model_args.model_path)
+            processor.tokenizer.padding_side = 'left'
+
+        if self.model_args.mode == 'laya_s2':
+            from internnav.model.basemodel.laya_s2.agent import load_laya_s2
+
+            model = load_laya_s2(self.model_args, device)
+        elif self.model_args.mode == 'dual_system':
             model = InternVLAN1ForCausalLM.from_pretrained(
                 self.model_args.model_path,
                 torch_dtype=torch.bfloat16,
@@ -185,6 +192,10 @@ class HabitatVLNEvaluator(DistributedEvaluator):
             sucs, spls, oss, nes, ndtws = self._run_eval_dual_system()
         elif self.model_args.mode == 'system2':
             sucs, spls, oss, nes, ndtws = self._run_eval_system2()
+        elif self.model_args.mode == 'laya_s2':
+            from internnav.habitat_extensions.vln.laya_s2_eval import run_eval_laya_s2
+
+            sucs, spls, oss, nes, ndtws = run_eval_laya_s2(self)
         else:
             raise ValueError(f"Invalid mode: {self.model_args.mode}")
 
@@ -290,6 +301,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
             )
 
             vis_frames = []
+            timers = EpisodeTimers()
             step_id = 0
             vis_writer = None
 
@@ -414,7 +426,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
 
                     inputs = self.processor(text=[text], images=input_images, return_tensors="pt").to(self.model.device)
 
-                    with torch.no_grad():
+                    with torch.no_grad(), timers.s2():
                         output_ids = self.model.generate(
                             **inputs,
                             max_new_tokens=128,
@@ -444,7 +456,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
                         pixel_values = inputs.pixel_values
                         image_grid_thw = torch.cat([thw.unsqueeze(0) for thw in inputs.image_grid_thw], dim=0)
 
-                        with torch.no_grad():
+                        with torch.no_grad(), timers.s2_latent():
                             traj_latents = self.model.generate_latents(output_ids, pixel_values, image_grid_thw)
 
                         # prepocess align with navdp
@@ -455,7 +467,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
                         pix_goal_depth = copy.copy(depth_dp)
                         depths_dp = torch.stack([pix_goal_depth, depth_dp]).unsqueeze(0).to(self.device)
 
-                        with torch.no_grad():
+                        with torch.no_grad(), timers.s1():
                             dp_actions = self.model.generate_traj(traj_latents, images_dp, depths_dp)
 
                         action_list = traj_to_actions(dp_actions)
@@ -494,7 +506,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
                         depth_dp = look_down_depth.unsqueeze(-1).to(torch.bfloat16)
 
                         depths_dp = torch.stack([pix_goal_depth, depth_dp]).unsqueeze(0).to(self.device)
-                        with torch.no_grad():
+                        with torch.no_grad(), timers.s1():
                             dp_actions = self.model.generate_traj(traj_latents, images_dp, depths_dp)
 
                         action_list = traj_to_actions(dp_actions)
@@ -596,6 +608,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
                 "ne": metrics["distance_to_goal"],
                 "steps": step_id,
                 "episode_instruction": episode_instruction,
+                **timers.summary(),
             }
             if 'ndtw' in metrics:
                 result['ndtw'] = metrics['ndtw']

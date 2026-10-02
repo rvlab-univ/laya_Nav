@@ -355,13 +355,15 @@ class InternVLAN1ForCausalLM(Qwen2_5_VLForConditionalGeneration, InternVLAN1Meta
         guidance_scale: float = 1.0,
         num_inference_steps: int = 10,
         num_sample_trajs: int = 32,
+        latents_projected: bool = False,  # True: traj_latents are already cond_projector outputs (e.g. Laya-S2)
     ):
         if 'nextdit' in self.get_system1_type():
             scheduler = FlowMatchEulerDiscreteScheduler()
             device = traj_latents.device
             dtype = traj_latents.dtype
 
-            traj_latents = self.get_model().cond_projector(traj_latents)
+            if not latents_projected:
+                traj_latents = self.get_model().cond_projector(traj_latents)
             if 'async' in self.get_system1_type():
                 with torch.no_grad():
                     images_dp = images_dp.permute(0, 1, 4, 2, 3)
