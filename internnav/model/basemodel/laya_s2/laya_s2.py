@@ -29,6 +29,7 @@ import torch.nn.functional as F
 
 SEG_TEXT, SEG_ACTION, SEG_HIST, SEG_CUR, SEG_DOWN = range(5)
 CONFIG_NAME = "laya_s2_config.json"
+UNUSED_PREFIXES = ("vision.head.",)  # SigLIP pooling head, removed (see LayaS2.__init__)
 WEIGHTS_NAME = "laya_s2.pt"
 
 
@@ -97,6 +98,12 @@ class LayaS2(nn.Module):
         self.cfg = cfg
         self.text = text_encoder
         self.vision = _vision_tower(vision_encoder)
+        # SigLIP's attention-pooling head summarizes the image into one vector (pooler_output); only the patch
+        # tokens are used here, so drop it instead of computing and discarding it on every image
+        if getattr(self.vision, "use_head", False):
+            self.vision.use_head = False
+            self.vision.config.vision_use_head = False
+            del self.vision.head
 
         d = self.text.config.hidden_size
         dv = self.vision.config.hidden_size
@@ -147,8 +154,13 @@ class LayaS2(nn.Module):
         )
         vision = AutoModel.from_config(AutoConfig.from_pretrained(os.path.join(ckpt_dir, "vision_encoder")))
         model = cls(cfg, text, vision)
-        model.load_state_dict(torch.load(os.path.join(ckpt_dir, WEIGHTS_NAME), map_location=map_location))
+        model.load_weights(os.path.join(ckpt_dir, WEIGHTS_NAME), map_location=map_location)
         return model
+
+    def load_weights(self, path: str, map_location="cpu"):
+        """Load a saved state dict; tensors of the removed SigLIP pooling head (older checkpoints) are ignored."""
+        sd = torch.load(path, map_location=map_location)
+        self.load_state_dict({k: v for k, v in sd.items() if not k.startswith(UNUSED_PREFIXES)})
 
     def save_pretrained(self, out_dir: str):
         self.cfg.save(out_dir)

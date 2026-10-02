@@ -15,7 +15,7 @@
 | 핵심 변경 | System 1의 별도 이미지 인코더와 **10스텝 × CFG 2배 × 32샘플 DiT 샘플링**을 없애고, 판단 모델이 이미 계산한 특징을 읽는 **10M 파라미터 경로 디코더(1회 실행)**로 교체 |
 | 경로 계산 1회 (3090, bf16) | **202 ms → 10.8 ms (약 19배)** |
 | step당 계산 | Laya-S2 + DualVLN System 1 **55~60 ms** → LayaNav **7.5~12.4 ms (약 5~7배)** |
-| 파라미터 | Laya-S2 436M + System 1 약 91M = **약 527M → 446.5M** |
+| 파라미터 | Laya-S2 436M + System 1 약 91M = **약 527M → 439.4M** (사용하지 않던 SigLIP 풀링 헤드 7.1M 제거 포함) |
 | 학습 | 7B teacher 없이 가능. C1(경로 헤드만) → C2(전체) |
 | 검증 상태 | 단위 테스트 13개 통과, 3090에서 C1 → C2 → 저장 → 평가 에이전트 로드까지 실행 확인. **실제 데이터 학습과 Habitat 평가는 아직 수행 전** |
 
@@ -48,9 +48,9 @@ Laya-S2(가벼운 System 2)를 붙인 뒤 각 부품의 시간을 RTX 3090(bf16,
 ### 3.1 구조
 
 ```
-LayaNav(                                         # 446.5M
+LayaNav(                                         # 439.4M
   ── 공유 인코더 (Laya-S2와 동일) ──
-  (vision): SiglipVisionTransformer      92.9M   # SigLIP2-B/16 @224, 패치 14×14 = 196개
+  (vision): SiglipVisionTransformer      85.8M   # SigLIP2-B/16 @224, 패치 14×14 = 196개 (풀링 헤드 제거)
   (vis_proj): Sequential                         # 768-d로 투영
   (text): ModernBertModel (mmBERT-base)  306.9M  # 지시문 + 이미지 토큰 융합 (임베딩 표 197M 포함)
   (seg_emb, pos_*, hist_slot_emb, action_*)
@@ -192,7 +192,7 @@ stage c2 | params 16.9M (trajectory head 0.1M, trainable 16.9M) | train 24 ...
 | step당 (판단 4 step마다, 경로 4 step마다) | 60.5 ms | **12.4 ms** (4.9배) |
 | step당 (판단 8 step마다, 경로 4 step마다) | 55.5 ms | **7.5 ms** (7.4배) |
 | step당 (판단 8 step마다, **경로 매 step**) | 206.8 ms | **15.6 ms** |
-| 파라미터 | 약 527M (436.3M + 약 91M) | 446.5M |
+| 파라미터 | 약 527M (436.3M + 약 91M) | 439.4M |
 
 - **H200에서는 차이가 더 클 수 있다.** DiT는 커널 실행 오버헤드에 묶여 있어서, GPU가 빨라져도 CPU 쪽 오버헤드는 그대로 남기 때문이다.
 - **7B 기준선 시간은 아직 없다.** Habitat 비교 평가에서 측정한다(`progress.json`의 `s2_time`, `s1_time`).
@@ -208,6 +208,7 @@ stage c2 | params 16.9M (trajectory head 0.1M, trainable 16.9M) | train 24 ...
 | 검증이 학습과 같은 집에서 이뤄짐 | 에피소드 단위 분할 | **집(scene) 단위** 분할이 기본값 (r2r 61개 중 4개를 따로 둠) |
 | 에피소드 밖 출발 지점 | 목표 프레임이 에피소드 끝을 넘는 경우 | 출발 지점을 에피소드 범위로 제한 |
 | C1에서 경로 샘플 없는 배치 | 손실이 그래프와 끊겨 `backward` 실패 또는 DDP 정지 가능 | 학습 대상 파라미터에 0 손실 연결 |
+| SigLIP 풀링 헤드(`vision.head`, 7.1M)가 매 인코딩마다 실행되고 결과는 버려짐 | 이미지 전체 요약 벡터(`pooler_output`)용 부속인데, 우리는 패치 특징만 사용 | 헤드 제거(`use_head=False`). 패치 특징은 원본과 **차이 0**, 미사용 파라미터 0개, 인코딩 1회당 약 0.5~0.6 ms 절약. 이전 체크포인트는 해당 키를 무시하고 불러옴. **Laya 구성(`head`, `scorer`, `act_head`)은 변화 없음** |
 
 ---
 

@@ -245,3 +245,33 @@ def test_habitat_episode_subset_is_shared_across_ranks(tmp_path):
     shards = [make(r, 4, 50) for r in range(4)]
     assert set().union(*shards) == one and sum(len(s) for s in shards) == 50
     assert len(make(0, 1, None)) == 200
+
+
+def test_siglip_pooling_head_removed_without_changing_outputs(tmp_path):
+    """The unused SigLIP pooling head is dropped: same patch features, old checkpoints still load."""
+    import copy
+
+    vision = SiglipVisionModel(
+        SiglipVisionConfig(
+            hidden_size=32, num_hidden_layers=1, num_attention_heads=2, intermediate_size=64, image_size=32, patch_size=8
+        )
+    ).eval()
+    reference = copy.deepcopy(vision)
+    model = tiny_model()
+    model.vision = None  # rebuild with this vision tower
+    model = LayaS2(model.cfg, model.text, vision).eval()
+    assert not hasattr(model.vision, "head") and not any(k.startswith("vision.head") for k in model.state_dict())
+    x = torch.randn(2, 3, 32, 32)
+    with torch.no_grad():
+        ref = reference(pixel_values=x)
+        assert ref.pooler_output is not None  # the original tower does compute (and we used to discard) it
+        torch.testing.assert_close(model.encode_images(x), ref.last_hidden_state)
+
+    # a checkpoint saved before the change still loads (pooling head tensors are ignored)
+    model.save_pretrained(str(tmp_path))
+    sd = torch.load(tmp_path / "laya_s2.pt")
+    sd.update({f"vision.head.{k}": v for k, v in reference.vision_model.head.state_dict().items()})
+    torch.save(sd, tmp_path / "laya_s2.pt")
+    loaded = LayaS2.from_pretrained(str(tmp_path)).eval()
+    with torch.no_grad():
+        torch.testing.assert_close(loaded.encode_images(x), model.encode_images(x))

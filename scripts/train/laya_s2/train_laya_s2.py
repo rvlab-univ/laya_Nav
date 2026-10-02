@@ -194,7 +194,7 @@ def main():
     step, epoch = 0, 0
     last = os.path.join(args.output_dir, "last")
     if os.path.exists(os.path.join(last, "train_state.pt")):
-        model.load_state_dict(torch.load(os.path.join(last, "laya_s2.pt"), map_location=device))
+        model.load_weights(os.path.join(last, "laya_s2.pt"), map_location=device)
         st = torch.load(os.path.join(last, "train_state.pt"), map_location=device)
         opt.load_state_dict(st["opt"])
         sched.load_state_dict(st["sched"])
