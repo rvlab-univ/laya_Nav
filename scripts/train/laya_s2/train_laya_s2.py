@@ -54,7 +54,13 @@ def parse_args():
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--warmup_ratio", type=float, default=0.02)
     ap.add_argument("--grad_clip", type=float, default=1.0)
-    ap.add_argument("--val_ratio", type=float, default=0.01, help="held-out fraction, split by episode")
+    ap.add_argument("--val_ratio", type=float, default=0.05, help="held-out fraction (of scenes or episodes)")
+    ap.add_argument(
+        "--val_split",
+        default="scene",
+        choices=["scene", "episode"],
+        help="scene: hold out whole scenes (measures generalization to unseen houses, like val_unseen)",
+    )
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -63,8 +69,13 @@ def parse_args():
     return ap.parse_args()
 
 
-def is_val(s, ratio):
-    h = hashlib.md5(f"{s['video']}|{s['ep_id']}".encode()).hexdigest()
+def scene_of(s):
+    return s["video"].rstrip("/").split("/")[-3]  # <data_path>/<scene>/videos/chunk-xxx
+
+
+def is_val(s, ratio, split="scene"):
+    key = scene_of(s) if split == "scene" else f"{s['video']}|{s['ep_id']}"
+    h = hashlib.md5(key.encode()).hexdigest()
     return int(h[:8], 16) / 0xFFFFFFFF < ratio
 
 
@@ -144,8 +155,10 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.text_encoder)
 
     samples = load_vln_samples(args.vln_dataset_use)
-    train_s = [s for s in samples if not is_val(s, args.val_ratio)]
-    val_s = [s for s in samples if is_val(s, args.val_ratio)]
+    train_s = [s for s in samples if not is_val(s, args.val_ratio, args.val_split)]
+    val_s = [s for s in samples if is_val(s, args.val_ratio, args.val_split)]
+    if main_proc and args.val_split == "scene":
+        print(f"val scenes ({args.val_split} split): {sorted({scene_of(s) for s in val_s})}")
     train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, goal_xy_order=args.goal_xy_order)
     val_ds = LayaS2Dataset(val_s, tok, cfg, args.teacher_latents, augment=False, goal_xy_order=args.goal_xy_order)
     collate = partial(collate_laya_s2, pad_id=tok.pad_token_id)
