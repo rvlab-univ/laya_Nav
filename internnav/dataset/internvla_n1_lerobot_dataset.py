@@ -11,14 +11,23 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 import transformers
-from decord import VideoReader
 from PIL import Image
 from torch.utils.data import Dataset
-from torchcodec.decoders import VideoDecoder
 from transformers.image_utils import to_numpy_array
 
 from .rope2d import get_rope_index_2, get_rope_index_25
 from .vlln_lerobot_dataset import VLLNDataset
+
+# video decoders are only needed by the video datasets (LazySupervisedDataset); the image-based VLN
+# datasets work without them
+try:
+    from decord import VideoReader
+except ImportError:
+    VideoReader = None
+try:
+    from torchcodec.decoders import VideoDecoder
+except Exception:  # ImportError, or missing FFmpeg libraries
+    VideoDecoder = None
 
 # Define placeholders for dataset paths
 CAMBRIAN_737K = {

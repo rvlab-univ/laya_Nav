@@ -177,3 +177,36 @@ def test_agent_decide():
         assert d["kind"] in ("action", "goal") and 0.0 <= d["escalate_prob"] <= 1.0
         if d["kind"] == "goal":
             assert d["latent"].shape == (2, 16) and all(0 <= v <= 1 for v in d["goal_xy"])
+
+
+def test_load_vln_samples_from_lerobot_layout(tmp_path, monkeypatch):
+    """Registry name -> lerobot scene folders (episodes.jsonl + parquet) -> samples, as on the server."""
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    from internnav.dataset.laya_s2_dataset import load_vln_samples
+
+    scene = tmp_path / "traj_data" / "r2r" / "17DRP5sb8fy"
+    (scene / "meta").mkdir(parents=True)
+    (scene / "meta" / "episodes.jsonl").write_text(
+        '{"episode_index": 0, "tasks": ["go to the door<INSTRUCTION_SEP>walk to the door"], "length": 10}\n'
+    )
+    chunk = scene / "data" / "chunk-000"
+    chunk.mkdir(parents=True)
+    n = 10
+    df = pd.DataFrame(
+        {
+            "action": [-1, 2, 1, 1, 1, 1, 1, 1, 1, 1],
+            "pose.125cm_30deg": [np.eye(4).flatten() for _ in range(n)],
+            "goal.125cm_30deg": [np.array([-1, -1])] + [np.array([64, 96])] * (n - 1),
+            "relative_goal_frame_id.125cm_30deg": [-1] + [4] * (n - 1),
+        }
+    )
+    df.to_parquet(chunk / "episode_000000.parquet")
+    monkeypatch.chdir(tmp_path)  # registry paths are relative ("traj_data/r2r")
+    samples = load_vln_samples("r2r_125cm_0_30")
+    kinds = sorted((s["kind"], s["start"]) for s in samples)
+    # 2 instructions x (goals at 4 and 8, turn at 0, stop at 9 repeated 5x)
+    assert kinds.count((GOAL, 4)) == 2 and kinds.count((GOAL, 8)) == 2
+    assert kinds.count((1, 0)) == 2 and kinds.count((2, 9)) == 10
+    g = next(s for s in samples if s["kind"] == GOAL)
+    assert g["goal"] == [64, 96] and g["video"].endswith("17DRP5sb8fy/videos/chunk-000")
