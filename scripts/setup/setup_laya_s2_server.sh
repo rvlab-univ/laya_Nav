@@ -37,6 +37,14 @@ setup_env() {
     pip install pandas pyarrow "huggingface_hub[cli]"
 }
 
+require_hf_login() {
+    # InternData-N1 / Scene-N1 are gated: the token must be set in *this* shell
+    if ! huggingface-cli whoami >/dev/null 2>&1 || huggingface-cli whoami 2>&1 | grep -qi "not logged in"; then
+        echo "Hugging Face login missing in this shell. Run:  read -s HF_TOKEN && export HF_TOKEN" >&2
+        exit 1
+    fi
+}
+
 download_ckpt() {
     huggingface-cli download InternRobotics/InternVLA-N1-DualVLN --local-dir checkpoints/InternVLA-N1-DualVLN
     wget -nc -P checkpoints \
@@ -44,6 +52,7 @@ download_ckpt() {
 }
 
 download_eval_data() {
+    require_hf_login
     huggingface-cli download InternRobotics/InternData-N1 --repo-type dataset \
         --include "vln_ce/raw_data/r2r/*" --local-dir data
     huggingface-cli download InternRobotics/Scene-N1 --repo-type dataset \
@@ -53,6 +62,7 @@ download_eval_data() {
 }
 
 download_train_data() {
+    require_hf_login
     for d in ${DATASETS}; do
         huggingface-cli download InternRobotics/InternData-N1 --repo-type dataset \
             --include "vln_ce/traj_data/${d}/*" --local-dir data
