@@ -161,6 +161,7 @@ def main():
     ap.add_argument("--num_history", type=int, default=8)
     ap.add_argument("--resize", type=int, default=384)
     ap.add_argument("--n_query", type=int, default=4)
+    ap.add_argument("--max_samples", type=int, default=-1, help="smoke test: only the first N goal samples")
     args = ap.parse_args()
 
     distributed = "RANK" in os.environ
@@ -181,7 +182,10 @@ def main():
     assert "nextdit" in system1, f"Laya-S2 distills cond_projector outputs (nextdit System 1 only), got {system1!r}"
     assert getattr(model.config, "n_query", args.n_query) == args.n_query
 
-    samples = load_vln_samples(args.vln_dataset_use, pixel_goal_only=True)[rank::world]
+    samples = load_vln_samples(args.vln_dataset_use, pixel_goal_only=True)
+    if args.max_samples > 0:
+        samples = samples[: args.max_samples]
+    samples = samples[rank::world]
     ds = TeacherGoalDataset(samples, tok, ip, args.num_history, (args.resize, args.resize))
     dl = DataLoader(
         ds, args.batch_size, num_workers=args.num_workers, collate_fn=make_collate(tok.pad_token_id, args.n_query)
