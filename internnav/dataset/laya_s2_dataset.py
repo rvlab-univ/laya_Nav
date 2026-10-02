@@ -50,7 +50,9 @@ def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, n
                     turn.append(actions[i])
                 turns.append(dict(base, start=start, kind=TURN, action=turn[0]))
             elif goal_len >= 3:
-                goals.append(dict(base, start=start, kind=GOAL, goal=list(goal)))
+                # poses (shared per episode, not copied) feed the trajectory targets of LayaNav
+                poses = item.get(f"poses_{height}cm_{pitch_2}deg")
+                goals.append(dict(base, start=start, kind=GOAL, goal=list(goal), goal_len=goal_len, poses=poses))
         stops.append(dict(base, start=n - 1, kind=STOP, action=0))
     return goals, turns, stops
 
@@ -78,6 +80,29 @@ def frame_path(s: Dict, frame_id: int, look_down: bool = False) -> str:
     return os.path.join(
         s["video"], f"observation.images.rgb.{s['height']}cm_{pitch}deg", f"episode_{s['ep_id']:06d}_{frame_id}.jpg"
     )
+
+
+def trajectory_frame_ids(goal_len: int, max_len: int = 12) -> np.ndarray:
+    """Frames along the way to the pixel goal used as System 1 starting points (as in NavPixelGoalDataset)."""
+    ids = np.arange(0, goal_len, 2)
+    if len(ids) > max_len:
+        ids = np.arange(0, goal_len, int(np.ceil(goal_len / max_len)))
+    return ids
+
+
+def trajectory_target(s: Dict, cid: int, steps: int) -> np.ndarray:
+    """Remaining path from frame start + cid to the goal, in the DualVLN System 1 format [steps, 3]."""
+    from .internvla_n1_lerobot_dataset import (
+        clip_or_pad,
+        get_trajectory_relative_to_frame,
+        interpolate_and_resample_trajectory,
+    )
+
+    pose = np.asarray(s["poses"][s["start"] : s["start"] + s["goal_len"] + 1], dtype=np.float64)
+    pose = pose.reshape(len(pose), 4, 4)
+    rel = get_trajectory_relative_to_frame(pose[cid:], camera_deg=s["pitch_2"])
+    _, deltas = interpolate_and_resample_trajectory(rel, steps)
+    return clip_or_pad(deltas, steps).astype(np.float32)
 
 
 def make_image_transform(cfg, augment: bool = False):
@@ -116,6 +141,8 @@ class LayaS2Dataset(Dataset):
         teacher_latents: Optional[str] = None,
         augment: bool = False,
         goal_xy_order: str = "xy",
+        with_traj: bool = False,  # LayaNav: add a (current look-down frame, remaining path) pair to goal samples
+        traj_steps: int = 32,
     ):
         self.actions = list(cfg.actions)
         self.samples = [s for s in samples if s["kind"] == GOAL or s["action"] in self.actions]
@@ -126,6 +153,9 @@ class LayaS2Dataset(Dataset):
         self.store = TeacherLatentStore(teacher_latents) if teacher_latents else None
         self.goal_xy_order = goal_xy_order
         self.transform = make_image_transform(cfg, augment)
+        self.augment = augment
+        self.with_traj = with_traj
+        self.traj_steps = traj_steps
 
     def __len__(self):
         return len(self.samples)
@@ -172,7 +202,22 @@ class LayaS2Dataset(Dataset):
                     item["latent_mask"] = True
         else:
             item["action_idx"] = self.actions.index(s["action"])
+        if self.with_traj:
+            item.update(traj_pixels=torch.zeros(3, S, S), traj=torch.zeros(self.traj_steps, 3), traj_mask=False)
+            ids = self._traj_start_ids(s)
+            if len(ids):
+                cid = int(np.random.choice(ids)) if self.augment else int(ids[len(ids) // 2])
+                item["traj_pixels"] = self._img(frame_path(s, start + cid, look_down=True))
+                item["traj"] = torch.from_numpy(trajectory_target(s, cid, self.traj_steps))
+                item["traj_mask"] = True
         return item
+
+    @staticmethod
+    def _traj_start_ids(s: Dict) -> np.ndarray:
+        if s["kind"] != GOAL or s.get("poses") is None:
+            return np.zeros(0, dtype=int)
+        ids = trajectory_frame_ids(s["goal_len"])
+        return ids[s["start"] + ids < len(s["poses"])]  # starting frames that exist in the episode
 
 
 KEY_FIELDS = ("video", "ep_id", "height", "pitch_1", "pitch_2", "instruction", "start")
@@ -187,4 +232,8 @@ def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tenso
         out[k] = torch.stack([b[k] for b in batch])
     for k in ("is_goal", "latent_mask", "action_idx"):
         out[k] = torch.tensor([b[k] for b in batch])
+    if "traj" in batch[0]:
+        out["traj_pixels"] = torch.stack([b["traj_pixels"] for b in batch])
+        out["traj"] = torch.stack([b["traj"] for b in batch])
+        out["traj_mask"] = torch.tensor([b["traj_mask"] for b in batch])
     return out

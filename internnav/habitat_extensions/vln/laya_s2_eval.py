@@ -1,4 +1,4 @@
-"""Habitat VLN evaluation with Laya-S2 as System 2 and the DualVLN System 1 (mode='laya_s2').
+"""Habitat VLN evaluation of Laya-S2 + DualVLN System 1 (mode='laya_s2') and LayaNav (mode='laya_nav').
 
 The loop mirrors ``HabitatVLNEvaluator._run_eval_dual_system`` step for step (same look-down capture,
 System 1 re-planning every MAX_LOCAL_STEPS, System 2 re-query after MAX_STEPS or a local STOP, same
@@ -41,13 +41,10 @@ def _look_down_depth(ev, depth):
     return d
 
 
-def _plan_s1(agent, timers, latent, pix_goal_image, pix_goal_depth, look_down_image, look_down_depth):
-    image_dp = torch.tensor(np.array(look_down_image.resize((224, 224)))).to(torch.bfloat16) / 255
-    images_dp = torch.stack([pix_goal_image, image_dp]).unsqueeze(0).to(agent.device)
-    depth_dp = look_down_depth.unsqueeze(-1).to(torch.bfloat16)
-    depths_dp = torch.stack([pix_goal_depth, depth_dp]).unsqueeze(0).to(agent.device)
+def _local_actions(agent, timers, look_down_image, look_down_depth):
+    """System 1 call (DualVLN DiT or the LayaNav head) -> the next MAX_LOCAL_STEPS discrete actions."""
     with torch.no_grad(), timers.s1():
-        dp_actions = agent.s1.generate_traj(latent, images_dp, depths_dp, latents_projected=True)
+        dp_actions = agent.plan(look_down_image, look_down_depth)
     action_list = traj_to_actions(dp_actions)
     if len(action_list) < MAX_STEPS:
         action_list += [0] * (MAX_STEPS - len(action_list))
@@ -75,7 +72,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
         vis_frames, rgb_list, action_seq, local_actions, esc_probs = [], [], [], [], []
         step_id, forward_action = 0, 0
         done = False
-        pixel_goal = latent = None
+        pixel_goal = None
 
         while (not done) and (step_id <= ev.max_steps_per_episode):
             image = Image.fromarray(observations["rgb"]).convert('RGB')
@@ -101,13 +98,9 @@ def run_eval_laya_s2(ev):  # noqa: C901
                 if d["kind"] == "goal":
                     W, H = look_down_image.size
                     pixel_goal = [int(d["goal_xy"][0] * W), int(d["goal_xy"][1] * H)]  # (x, y), for vis only
-                    latent = d["latent"][None].to(torch.bfloat16)
                     forward_action = 0
-                    pix_goal_image = torch.tensor(np.array(look_down_image.resize((224, 224)))).to(torch.bfloat16) / 255
-                    pix_goal_depth = look_down_depth.unsqueeze(-1).to(torch.bfloat16)
-                    local_actions = _plan_s1(
-                        agent, timers, latent, pix_goal_image, pix_goal_depth, look_down_image, look_down_depth
-                    )
+                    agent.start_goal(d, look_down_image, look_down_depth)
+                    local_actions = _local_actions(agent, timers, look_down_image, look_down_depth)
                     if local_actions[0] == action_code.STOP:
                         # same fallback as the baseline when System 1 stops right away
                         pixel_goal = None
@@ -121,9 +114,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
                 action = action_seq.pop(0)
             elif pixel_goal is not None:
                 if len(local_actions) == 0:
-                    local_actions = _plan_s1(
-                        agent, timers, latent, pix_goal_image, pix_goal_depth, look_down_image, look_down_depth
-                    )
+                    local_actions = _local_actions(agent, timers, look_down_image, look_down_depth)
                 action = local_actions.pop(0)
                 forward_action += 1
                 if forward_action > MAX_STEPS or action == action_code.STOP:

@@ -90,6 +90,8 @@ class FourierXY(nn.Module):
 
 
 class LayaS2(nn.Module):
+    config_class = LayaS2Config
+
     def __init__(self, cfg: LayaS2Config, text_encoder: nn.Module, vision_encoder: nn.Module):
         super().__init__()
         self.cfg = cfg
@@ -138,7 +140,7 @@ class LayaS2(nn.Module):
     def from_pretrained(cls, ckpt_dir: str, map_location="cpu") -> "LayaS2":
         from transformers import AutoConfig, AutoModel
 
-        cfg = LayaS2Config.load(ckpt_dir)
+        cfg = cls.config_class.load(ckpt_dir)
         # architecture only; all weights come from the saved state dict
         text = AutoModel.from_config(
             AutoConfig.from_pretrained(os.path.join(ckpt_dir, "text_encoder")), attn_implementation="sdpa"
@@ -250,7 +252,15 @@ class LayaS2(nn.Module):
         lat = self.latent_decoder(tgt, h, memory_key_padding_mask=pad)[:, 1:]
         latent = self.latent_out(lat)
 
-        return dict(logits=logits, offsets=offsets, act_logits=act_logits, latent=latent, goal_xy=goal_xy)
+        return dict(
+            logits=logits,
+            offsets=offsets,
+            act_logits=act_logits,
+            latent=latent,
+            goal_xy=goal_xy,
+            goal_token=goal_tok,  # fused hidden state of the chosen goal patch (+ goal position)
+            down_feat=vis[n_hist + B :],  # look-down frame features before fusion, reusable by a planner
+        )
 
     @torch.no_grad()
     def decide(self, out: Dict[str, torch.Tensor]) -> List[Dict]:

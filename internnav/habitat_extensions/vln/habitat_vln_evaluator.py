@@ -116,10 +116,10 @@ class HabitatVLNEvaluator(DistributedEvaluator):
             processor = AutoProcessor.from_pretrained(self.model_args.model_path)
             processor.tokenizer.padding_side = 'left'
 
-        if self.model_args.mode == 'laya_s2':
-            from internnav.model.basemodel.laya_s2.agent import load_laya_s2
+        if self.model_args.mode in ('laya_s2', 'laya_nav'):
+            from internnav.model.basemodel.laya_s2.agent import load_agent
 
-            model = load_laya_s2(self.model_args, device)
+            model = load_agent(self.model_args, device)
         elif self.model_args.mode == 'dual_system':
             model = InternVLAN1ForCausalLM.from_pretrained(
                 self.model_args.model_path,
@@ -192,7 +192,7 @@ class HabitatVLNEvaluator(DistributedEvaluator):
             sucs, spls, oss, nes, ndtws = self._run_eval_dual_system()
         elif self.model_args.mode == 'system2':
             sucs, spls, oss, nes, ndtws = self._run_eval_system2()
-        elif self.model_args.mode == 'laya_s2':
+        elif self.model_args.mode in ('laya_s2', 'laya_nav'):
             from internnav.habitat_extensions.vln.laya_s2_eval import run_eval_laya_s2
 
             sucs, spls, oss, nes, ndtws = run_eval_laya_s2(self)
