@@ -21,6 +21,9 @@ setup_env() {
     conda create -y -n ${ENV} python=3.9
     conda activate ${ENV}
     conda install -y habitat-sim==0.2.4 withbullet headless -c conda-forge -c aihabitat
+    # C compiler for Triton's runtime build (flash-attn rotary kernels in Qwen2.5-VL); servers often lack gcc
+    conda install -y -c conda-forge gcc
+    conda env config vars set CC=${CONDA_PREFIX}/bin/gcc
     if [ ! -d third_party/habitat-lab ]; then
         git clone --branch v0.2.4 https://github.com/facebookresearch/habitat-lab.git third_party/habitat-lab
     fi
