@@ -29,6 +29,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     outside = {"xy": 0, "yx": 0}
+    drawn = []
     stats = random.sample(goals, min(args.n_stats, len(goals)))
     size = None
     for i, s in enumerate(stats):
@@ -45,11 +46,25 @@ def main():
                 d.ellipse([x - 8, y - 8, x + 8, y + 8], outline=c, width=4)
             d.text((10, 10), f"goal={s['goal']} size={W}x{H}  red=(x,y) blue=(y,x)", fill="yellow")
             img.save(os.path.join(args.out, f"goal_{i:02d}.jpg"))
+            drawn.append(img)
 
     n = len(stats)
-    print(f"{len(goals)} goal samples, image size {size}")
+    a_vals = [s["goal"][0] for s in stats]
+    b_vals = [s["goal"][1] for s in stats]
+    print(f"{len(goals)} goal samples, image size {size} (W x H)")
+    print(f"first value : min {min(a_vals)}  max {max(a_vals)}  mean {sum(a_vals) / n:.1f}")
+    print(f"second value: min {min(b_vals)}  max {max(b_vals)}  mean {sum(b_vals) / n:.1f}")
     print(f"outside image: as (x, y) {outside['xy']}/{n}   as (y, x) {outside['yx']}/{n}")
-    print(f"drawings: {args.out}/goal_*.jpg  (red = (x, y), blue = (y, x))")
+
+    # all drawings in one contact sheet (4 columns, half size)
+    if drawn:
+        w, h = drawn[0].size[0] // 2, drawn[0].size[1] // 2
+        cols = 4
+        sheet = Image.new("RGB", (cols * w, ((len(drawn) + cols - 1) // cols) * h))
+        for k, im in enumerate(drawn):
+            sheet.paste(im.resize((w, h)), ((k % cols) * w, (k // cols) * h))
+        sheet.save(os.path.join(args.out, "sheet.jpg"), quality=85)
+    print(f"drawings: {args.out}/sheet.jpg (all) and goal_*.jpg  (red = (x, y), blue = (y, x))")
 
 
 if __name__ == "__main__":
