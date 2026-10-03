@@ -228,6 +228,8 @@ stage c2 | params 16.9M (trajectory head 0.1M, trainable 16.9M) | train 24 ...
 
 ## 8. 서버 실행 순서
 
+> 2026-10-03 이후 C1/C2는 `scripts/train/laya_s2/train_laya_nav.sh`로 실행한다(10절). 아래는 첫 C1 당시의 명령이다.
+
 현재 Laya-S2 학습(`train_laya_s2.sh`)이 끝난 뒤:
 
 ```bash
@@ -263,6 +265,52 @@ EVAL_EPISODES=300 bash scripts/eval/bash/compare_laya_s2.sh
    - **경로 품질이 부족하면:** 경로 후보 K개 + scorer 선택(Laya 구조 확장), 또는 1~2스텝 flow 헤드
    - **일반화가 부족하면:** rxr / scalevln 추가 (7B 추출 없이)
    - **판단 성능이 부족하면:** 7B를 escalate용으로만 쓰는 하이브리드
+
+---
+
+## 10. 후속 변경 (2026-10-03): C1 경로 헤드 보강과 큰 데이터셋
+
+서버에서 돌린 첫 C1(r2r) 결과가 좋지 않았다. 정답 경로 생성 규칙은 원본 System 1과 같다(프레임 정렬, pose 구간, pitch 보정, 재표본 모두 확인). 차이는 학습 구성에 있었다.
+
+| | 원본 System 1 | 첫 C1 | 변경 |
+|---|---|---|---|
+| 목표 샘플당 출발 지점 | 최대 12개 전부 | 무작위 1개 | `--traj_starts` (기본 4) |
+| 두 장면 비교 | 두 프레임 패치 전체에 self-attention (`memory_encoder`) | 경로 쿼리가 각 프레임을 따로 읽을 뿐, 두 프레임 패치가 서로를 보지 못함 | 메모리 전체에 self-attention 2층 (`traj_fuse_layers`) |
+| 목표 위치 | 7B hidden state에 들어 있음 | 결정 모델의 은닉 상태에 섞여 있음 | 목표 프레임의 목표 주변 패치에 표시 + 목표 좌표 토큰 (`traj_goal_mark`) |
+| 이미지 인코더 | 함께 학습 | C1에서는 고정 | 그대로 (C2에서 학습) |
+
+- **비용 (5060 Ti 실측)**: 경로 헤드 10.1M → 13.7M, 경로 계산 1회 +0.9 ms, step당 +0.2 ms. C1 학습 step은 출발 지점 4개 때문에 약 +40%.
+- **호환**: 옛 체크포인트는 설정에 새 필드가 없으면 옛 헤드로 그대로 로드된다. 첫 C1과 같은 설정은 `--traj_fuse_layers 0 --traj_goal_mark 0 --traj_starts 1`이다.
+- **진단 스크립트 (`scripts/train/laya_s2/eval_traj.py`)**: 처음 보는 집의 모든 출발 지점에서 ade, fde, 첫 0.5 m 방향 오차를 잰다. "평균 경로"와 "정지" 기준선을 함께 내고, 출발 위치별·남은 거리별로 나눠 보여 준다. 평균 경로 기준선보다 확실히 낫지 않으면 경로 헤드가 목표나 장면을 읽지 못하고 있다는 뜻이다. 학습 로그의 `[val step]`은 이제 출발 지점 4개 평균이라 첫 C1 값과 직접 비교할 수 없으니, 체크포인트 간 비교는 이 스크립트로 한다.
+
+**큰 데이터셋(rxr, scalevln) 대응**
+
+| 문제 | 조치 |
+|---|---|
+| 카메라 pose를 프레임마다 Python 중첩 리스트로 저장 (프레임당 약 570 B, dataloader worker마다 복사될 수 있음) | float32 배열 `[T, 4, 4]` (프레임당 64 B) |
+| 해당 카메라 설정의 열이 없는 에피소드가 **이전 에피소드의 pose와 목표를 그대로 씀** (원본 코드의 버그) | 그 에피소드는 건너뛰고 경고 출력 |
+| 장면을 스레드로 읽어서 샘플 순서가 실행마다 다름 → `%30` 부분집합이 매번 다르고, GPU 여러 장일 때 rank마다 목록이 다름 | 샘플 정렬 후 seed 고정 샘플링 |
+| scalevln은 5% 집 분할만으로 수천 채가 검증으로 빠져 검증이 오래 걸림 | `--max_val_samples` (기본 5000, 고정 무작위 부분집합) |
+| 다운로드가 아카이브를 전부 받은 뒤 풀어서 디스크가 데이터의 약 2배 필요 | 아카이브 하나씩 받고 풀고 지움. 중단되면 같은 명령을 다시 실행하면 이어서 받음 |
+
+**서버 실행**
+
+```bash
+DATASETS="rxr scalevln" bash scripts/setup/setup_laya_s2_server.sh train_data   # 압축 기준 rxr 911 GB, scalevln 1.3 TB
+bash scripts/setup/setup_laya_s2_server.sh check
+
+# C1 -> 진단 -> C2 -> 진단. 처음 한 번은 첫 C1(checkpoints/laya_nav_c1)도 진단해서 기준으로 남긴다
+setsid nohup bash scripts/train/laya_s2/train_laya_nav.sh > logs/train_laya_nav_mix.log 2>&1 < /dev/null &
+#   VLN_DATASETS=r2r_125cm_0_30,rxr_125cm_0_30,scalevln_125cm_0_30%30   # 데이터셋별 비율 (기본: 세 데이터셋 전부)
+#   TAG=laya_nav_mix  BATCH=64  INIT=checkpoints/laya_s2/last  VAL_RATIO=0.05
+# 진단 결과: logs/<TAG>_c1_eval_traj.log, logs/<TAG>_c2_eval_traj.log, logs/laya_nav_c1_eval_traj.log
+
+LAYA_NAV=checkpoints/laya_nav_mix_c2/last EVAL_EPISODES=300 bash scripts/eval/bash/compare_laya_s2.sh
+```
+
+- **기본 데이터셋**은 Habitat R2R 평가와 카메라가 같은 세 가지(1.25 m, 내려다보기 30°)다. 60 cm 설정은 모델에 카메라 정보 입력이 없어서 섞지 않았다.
+- **C2 메모리**: 출발 지점 4개 때문에 C2에서 이미지 인코더 활성값이 약 40% 늘어난다. OOM이 나면 `BATCH=48` 또는 `--traj_starts 2`로 줄인다.
+- **확인 범위**: 테스트 19개 통과. 가짜 LeRobot 데이터로 실제 크기 C1 학습, 진단 스크립트, 실행 스크립트, 다운로드 루프(가짜 Hub)를 확인했다. 실제 크기 C2는 5060 Ti(16 GB)에 올라가지 않아 작은 모델로만 확인했다. **실제 데이터에서 경로 품질이 나아지는지는 서버 결과로 확인해야 한다.**
 
 ---
 
