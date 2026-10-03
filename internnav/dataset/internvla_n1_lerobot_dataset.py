@@ -758,7 +758,9 @@ def clip_or_pad(arr, fixed_len):
         return np.concatenate([arr, pad], axis=0)
 
 
-def get_annotations_from_lerobot_data(data_path, setting):
+def get_annotations_from_lerobot_data(data_path, setting, pose_dtype=None):
+    """pose_dtype: keep each episode's poses as one [T, 4, 4] array of this dtype instead of nested lists
+    (about 9x less memory, and dataloader workers do not copy it), for large datasets."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     import pyarrow.parquet as pq
@@ -792,12 +794,17 @@ def get_annotations_from_lerobot_data(data_path, setting):
             relative_goal_frame_id_key = f"relative_goal_frame_id.{setting}"
 
             if pose_key in df.columns and goal_key in df.columns and relative_goal_frame_id_key in df.columns:
-                ep_poses = df[pose_key].apply(lambda x: x.tolist()).tolist()
+                if pose_dtype is None:
+                    ep_poses = df[pose_key].apply(lambda x: x.tolist()).tolist()
+                else:
+                    ep_poses = np.stack([np.asarray(x.tolist(), dtype=pose_dtype).reshape(4, 4) for x in df[pose_key]])
                 ep_pixel_goals = [
                     [df[relative_goal_frame_id_key][idx].tolist(), df[goal_key][idx].tolist()] for idx in range(len(df))
                 ]
             else:
-                print(f"Warning: Missing data for setting {setting} in episode {ep_id}, filling with defaults.")
+                # skip: falling through would reuse the previous episode's poses and pixel goals
+                print(f"Warning: Missing data for setting {setting} in {scene_id} episode {ep_id}, skipped.")
+                continue
 
             assert len(ep_actions) == ep_len, f"Action length mismatch in episode {ep_id}"
 

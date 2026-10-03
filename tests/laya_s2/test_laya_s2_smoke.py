@@ -212,6 +212,56 @@ def test_load_vln_samples_from_lerobot_layout(tmp_path, monkeypatch):
     assert g["goal"] == [64, 96] and g["video"].endswith("17DRP5sb8fy/videos/chunk-000")
 
 
+def test_large_dataset_loading(tmp_path, monkeypatch, capsys):
+    """Compact poses, skipped episodes without the camera setting, fixed order and subsets, capped validation."""
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    import importlib.util
+    import os
+
+    from internnav.dataset.laya_s2_dataset import load_vln_samples, trajectory_target
+
+    n = 12
+    for sc in ("sceneA", "sceneB"):
+        scene = tmp_path / "traj_data" / "r2r" / sc
+        (scene / "meta").mkdir(parents=True)
+        (scene / "meta" / "episodes.jsonl").write_text(
+            "".join(f'{{"episode_index": {e}, "tasks": ["go to door {e}"], "length": {n}}}\n' for e in range(3))
+        )
+        chunk = scene / "data" / "chunk-000"
+        chunk.mkdir(parents=True)
+        for e in range(3):
+            cols = {"action": [-1, 2] + [1] * (n - 2)}
+            if not (sc == "sceneB" and e == 1):  # this episode lacks the 125cm_30deg columns
+                cols["pose.125cm_30deg"] = [np.eye(4).flatten() for _ in range(n)]
+                cols["goal.125cm_30deg"] = [np.array([-1, -1])] + [np.array([64, 96])] * (n - 1)
+                cols["relative_goal_frame_id.125cm_30deg"] = [-1] + [4] * (n - 1)
+            pd.DataFrame(cols).to_parquet(chunk / f"episode_{e:06d}.parquet")
+    monkeypatch.chdir(tmp_path)
+
+    full = load_vln_samples("r2r_125cm_0_30")
+    assert "sceneB episode 1, skipped" in capsys.readouterr().out
+    assert not any(s["video"].endswith("sceneB/videos/chunk-000") and s["ep_id"] == 1 for s in full)
+    g = next(s for s in full if s["kind"] == GOAL)
+    assert isinstance(g["poses"], np.ndarray) and g["poses"].dtype == np.float32 and g["poses"].shape == (n, 4, 4)
+    assert trajectory_target(g, 0, 32).shape == (32, 3)
+    key = lambda s: (s["video"], s["ep_id"], s["start"], s["kind"])  # noqa: E731
+    assert [key(s) for s in load_vln_samples("r2r_125cm_0_30")] == [key(s) for s in full]  # same order every run
+
+    half = load_vln_samples("r2r_125cm_0_30%50")
+    assert len(half) == len(full) // 2
+    assert [key(s) for s in load_vln_samples("r2r_125cm_0_30%50")] == [key(s) for s in half]  # same subset every run
+
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "train", "laya_s2", "train_laya_s2.py")
+    spec = importlib.util.spec_from_file_location("train_laya_s2", path)
+    base = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(base)
+    train, val = base.split_samples(full, 1.0, "scene")  # every scene held out
+    assert not train and len(val) == len(full)
+    capped = base.split_samples(full, 1.0, "scene", max_val=3)[1]
+    assert len(capped) == 3 and capped == base.split_samples(full, 1.0, "scene", max_val=3)[1]  # fixed subset
+
+
 def test_habitat_episode_subset_is_shared_across_ranks(tmp_path):
     """EVAL_EPISODES subset: same episodes for every model, disjoint and complete across ranks."""
     import types

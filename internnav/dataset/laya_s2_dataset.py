@@ -57,18 +57,24 @@ def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, n
     return goals, turns, stops
 
 
-def load_vln_samples(dataset_use: str, sample_step=4, num_future_steps=4, pixel_goal_only=False, stop_repeat=5):
+def load_vln_samples(dataset_use: str, sample_step=4, num_future_steps=4, pixel_goal_only=False, stop_repeat=5, seed=0):
+    """Registry names, comma separated; ``name%30`` keeps a fixed random 30% of that dataset's samples."""
     from .internvla_n1_lerobot_dataset import data_list, get_annotations_from_lerobot_data
 
     samples = []
     for data in data_list(dataset_use.split(",")):
         height, pitch_1, pitch_2 = data.get("height"), data.get("pitch_1"), data.get("pitch_2")
-        ann = get_annotations_from_lerobot_data(data["data_path"], f"{height}cm_{pitch_2}deg")
+        # float32 pose arrays: nested lists would take ~9x the memory on rxr / scalevln, per dataloader worker
+        ann = get_annotations_from_lerobot_data(data["data_path"], f"{height}cm_{pitch_2}deg", pose_dtype=np.float32)
         goals, turns, stops = enumerate_samples(ann, height, pitch_1, pitch_2, sample_step, num_future_steps)
         cur = goals if pixel_goal_only else goals + turns + stops * stop_repeat
+        # scenes are read by a thread pool, so the order varies between runs; every rank (DistributedSampler) and
+        # every resumed run must see the same list
+        cur.sort(key=lambda s: (s["video"], s["ep_id"], s["instruction"], s["start"], s["kind"]))
         rate = data.get("sampling_rate", 1.0)
         if rate < 1.0:
-            cur = random.sample(cur, int(len(cur) * rate))
+            rng = random.Random(f"{seed}|{data['data_path']}|{height}_{pitch_1}_{pitch_2}")
+            cur = rng.sample(cur, int(len(cur) * rate))
         print(f"[laya_s2] {data['data_path']} {height}cm {pitch_1}/{pitch_2}deg: "
               f"goal={len(goals)} turn={len(turns)} stop={len(stops)} -> {len(cur)}")
         samples.extend(cur)
@@ -141,8 +147,9 @@ class LayaS2Dataset(Dataset):
         teacher_latents: Optional[str] = None,
         augment: bool = False,
         goal_xy_order: str = "xy",
-        with_traj: bool = False,  # LayaNav: add a (current look-down frame, remaining path) pair to goal samples
+        with_traj: bool = False,  # LayaNav: add (current look-down frame, remaining path) pairs to goal samples
         traj_steps: int = 32,
+        traj_starts: int = 1,  # starting frames per goal sample (the DualVLN System 1 trains on all of them, <= 12)
     ):
         self.actions = list(cfg.actions)
         self.samples = [s for s in samples if s["kind"] == GOAL or s["action"] in self.actions]
@@ -156,6 +163,7 @@ class LayaS2Dataset(Dataset):
         self.augment = augment
         self.with_traj = with_traj
         self.traj_steps = traj_steps
+        self.traj_starts = traj_starts
 
     def __len__(self):
         return len(self.samples)
@@ -203,13 +211,16 @@ class LayaS2Dataset(Dataset):
         else:
             item["action_idx"] = self.actions.index(s["action"])
         if self.with_traj:
-            item.update(traj_pixels=torch.zeros(3, S, S), traj=torch.zeros(self.traj_steps, 3), traj_mask=False)
-            ids = self._traj_start_ids(s)
-            if len(ids):
-                cid = int(np.random.choice(ids)) if self.augment else int(ids[len(ids) // 2])
-                item["traj_pixels"] = self._img(frame_path(s, start + cid, look_down=True))
-                item["traj"] = torch.from_numpy(trajectory_target(s, cid, self.traj_steps))
-                item["traj_mask"] = True
+            K = self.traj_starts
+            item.update(
+                traj_pixels=torch.zeros(K, 3, S, S),
+                traj=torch.zeros(K, self.traj_steps, 3),
+                traj_mask=torch.zeros(K, dtype=torch.bool),
+            )
+            for j, cid in enumerate(self._pick_starts(self._traj_start_ids(s), K, self.augment)):
+                item["traj_pixels"][j] = self._img(frame_path(s, start + cid, look_down=True))
+                item["traj"][j] = torch.from_numpy(trajectory_target(s, cid, self.traj_steps))
+                item["traj_mask"][j] = True
         return item
 
     @staticmethod
@@ -218,6 +229,18 @@ class LayaS2Dataset(Dataset):
             return np.zeros(0, dtype=int)
         ids = trajectory_frame_ids(s["goal_len"])
         return ids[s["start"] + ids < len(s["poses"])]  # starting frames that exist in the episode
+
+    @staticmethod
+    def _pick_starts(ids: np.ndarray, k: int, random_pick: bool) -> List[int]:
+        """Up to k starting frames: random ones (training) or evenly spread, the middle one for k = 1 (validation)."""
+        n = min(k, len(ids))
+        if n == 0:
+            return []
+        if random_pick:
+            return [int(c) for c in np.random.choice(ids, n, replace=False)]
+        if n == 1:
+            return [int(ids[len(ids) // 2])]
+        return [int(ids[j]) for j in np.unique(np.linspace(0, len(ids) - 1, n).round().astype(int))]
 
 
 KEY_FIELDS = ("video", "ep_id", "height", "pitch_1", "pitch_2", "instruction", "start")
@@ -232,8 +255,7 @@ def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tenso
         out[k] = torch.stack([b[k] for b in batch])
     for k in ("is_goal", "latent_mask", "action_idx"):
         out[k] = torch.tensor([b[k] for b in batch])
-    if "traj" in batch[0]:
-        out["traj_pixels"] = torch.stack([b["traj_pixels"] for b in batch])
-        out["traj"] = torch.stack([b["traj"] for b in batch])
-        out["traj_mask"] = torch.tensor([b["traj_mask"] for b in batch])
+    if "traj" in batch[0]:  # [B, K, ...]
+        for k in ("traj_pixels", "traj", "traj_mask"):
+            out[k] = torch.stack([b[k] for b in batch])
     return out

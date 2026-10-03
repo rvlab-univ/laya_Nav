@@ -84,12 +84,13 @@ class LayaNavAgent(LayaS2Agent):
         with self._autocast():
             self._memory = self.student.plan_memory(self._out)
         self._goal_feat = self._out["down_feat"]
+        self._goal_xy = self._out["goal_xy"]
 
     @torch.no_grad()
     def plan(self, down_image: Image.Image, down_depth: torch.Tensor) -> torch.Tensor:
         with self._autocast():
             cur = self.student.encode_frame(self.transform(down_image)[None].to(self.device))
-            return self.student.plan(self._memory, self._goal_feat, cur)
+            return self.student.plan(self._memory, self._goal_feat, cur, goal_xy=self._goal_xy)
 
 
 def _tokenizer(model_path):

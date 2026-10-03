@@ -5,9 +5,9 @@
 #   huggingface-cli login                                     # Scene-N1 / InternData-N1 may require accepting terms
 #   bash scripts/setup/setup_laya_s2_server.sh ckpt         # DualVLN + DepthAnything v2 (~17 GB)
 #   bash scripts/setup/setup_laya_s2_server.sh eval_data    # R2R VLN-CE episodes + mp3d_ce scenes (~16 GB)
-#   DATASETS="r2r" bash scripts/setup/setup_laya_s2_server.sh train_data
-#       compressed sizes: r2r 334 GB, rxr 911 GB, scalevln 1.3 TB (extracted size is similar; tars are
-#       deleted after extraction unless KEEP_TAR=1)
+#   DATASETS="r2r rxr scalevln" bash scripts/setup/setup_laya_s2_server.sh train_data
+#       compressed sizes: r2r 334 GB, rxr 911 GB, scalevln 1.3 TB (extracted size is similar). Archives are fetched
+#       and extracted one at a time and deleted unless KEEP_TAR=1; rerun the same command after an interruption.
 #   bash scripts/setup/setup_laya_s2_server.sh check
 set -e
 
@@ -64,12 +64,30 @@ download_eval_data() {
 download_train_data() {
     require_hf_login
     for d in ${DATASETS}; do
+        local dst=data/vln_ce/traj_data/${d}
+        local marks=data/vln_ce/.extracted/${d}  # outside ${dst}: every folder there is read as a scene
+        mkdir -p ${dst} ${marks}
         huggingface-cli download InternRobotics/InternData-N1 --repo-type dataset \
-            --include "vln_ce/traj_data/${d}/*" --local-dir data
-        for t in data/vln_ce/traj_data/${d}/*.tar.gz; do
-            [ -e "$t" ] || continue
-            tar -xzf "$t" -C data/vln_ce/traj_data/${d}
-            [ "${KEEP_TAR}" = 1 ] || rm -f "$t"
+            --include "vln_ce/traj_data/${d}/*" --exclude "*.tar.gz" --local-dir data
+        # one archive at a time (download, extract, delete): peak disk is the extracted data plus one archive instead
+        # of twice the dataset; archives already extracted are skipped, so an interrupted run can simply be repeated
+        local archives
+        archives=$(python -c "
+from huggingface_hub import HfApi
+for f in HfApi().list_repo_files('InternRobotics/InternData-N1', repo_type='dataset'):
+    if f.startswith('vln_ce/traj_data/${d}/') and f.endswith('.tar.gz'):
+        print(f)")
+        local n i=0
+        n=$(echo "${archives}" | grep -c . || true)
+        echo "${d}: ${n} archives, free space: $(df -h --output=avail data | tail -1)"
+        for f in ${archives}; do
+            i=$((i + 1))
+            [ -e "${marks}/$(basename "$f").done" ] && continue
+            echo "[${d} ${i}/${n}] ${f}"
+            huggingface-cli download InternRobotics/InternData-N1 --repo-type dataset --include "$f" --local-dir data
+            tar -xzf "data/$f" -C ${dst}
+            touch "${marks}/$(basename "$f").done"
+            [ "${KEEP_TAR}" = 1 ] || rm -f "data/$f"
         done
     done
     # dataset registry paths are relative to the repo root ("traj_data/r2r", ...)
@@ -93,5 +111,5 @@ case "$1" in
     eval_data) download_eval_data ;;
     train_data) download_train_data ;;
     check) check ;;
-    *) sed -n 2,13p "$0"; exit 1 ;;
+    *) sed -n 2,11p "$0"; exit 1 ;;
 esac

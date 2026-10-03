@@ -57,6 +57,10 @@ def parse_args():
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--traj_dim", type=int, default=LayaNavConfig.traj_dim)
     ap.add_argument("--traj_layers", type=int, default=LayaNavConfig.traj_layers)
+    # new trajectory heads only (a LayaNav --init_from keeps its own head config)
+    ap.add_argument("--traj_fuse_layers", type=int, default=2, help="0 = head as in the first C1 runs")
+    ap.add_argument("--traj_goal_mark", type=int, default=1, choices=[0, 1], help="0 = head as in the first C1 runs")
+    ap.add_argument("--traj_starts", type=int, default=4, help="starting frames per goal sample (1 = first C1 runs)")
     ap.add_argument("--goal_xy_order", default="xy", choices=["xy", "yx"])
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--max_steps", type=int, default=-1)
@@ -69,6 +73,9 @@ def parse_args():
     ap.add_argument("--grad_clip", type=float, default=1.0)
     ap.add_argument("--val_ratio", type=float, default=0.05)
     ap.add_argument("--val_split", default="scene", choices=["scene", "episode"])
+    ap.add_argument(
+        "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
+    )
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -104,7 +111,8 @@ def run(model, batch, weights, tweights, stage):
     l_dec, stats = compute_loss(m, out, batch, weights)
     if "traj" in out:
         idx = out["traj_idx"]
-        l_traj, tstats = traj_loss(out["traj"], batch["traj"][idx], torch.ones_like(idx, dtype=torch.bool), tweights)
+        target = batch["traj"][idx, out["traj_slot"]]  # one target per (sample, starting frame) pair
+        l_traj, tstats = traj_loss(out["traj"], target, torch.ones_like(idx, dtype=torch.bool), tweights)
     else:  # no pixel-goal sample in this batch: a zero loss that still reaches the trainable head (c1 / DDP)
         zero = m.traj_queries.sum() * 0
         l_traj, tstats = zero, dict(l_traj=zero.detach(), ade=zero.detach(), fde=zero.detach(), n_traj=zero.detach())
@@ -134,7 +142,12 @@ def evaluate(model, loader, weights, tweights, stage, device):
 
 
 def build_model(args):
-    traj_cfg = dict(traj_dim=args.traj_dim, traj_layers=args.traj_layers)
+    traj_cfg = dict(
+        traj_dim=args.traj_dim,
+        traj_layers=args.traj_layers,
+        traj_fuse_layers=args.traj_fuse_layers,
+        traj_goal_mark=bool(args.traj_goal_mark),
+    )
     if args.init_from:
         return LayaNav.load_any(args.init_from, **traj_cfg) if os.path.exists(args.init_from) else None
     ip = AutoImageProcessor.from_pretrained(LayaNavConfig.vision_encoder)
@@ -164,11 +177,10 @@ def main():
 
     # c1 only learns from pixel-goal samples (the ones with a trajectory)
     samples = load_vln_samples(args.vln_dataset_use, pixel_goal_only=args.stage == "c1")
-    train_s = [s for s in samples if not base.is_val(s, args.val_ratio, args.val_split)]
-    val_s = [s for s in samples if base.is_val(s, args.val_ratio, args.val_split)]
+    train_s, val_s = base.split_samples(samples, args.val_ratio, args.val_split, args.max_val_samples)
     if main_proc and args.val_split == "scene":
         print(f"val scenes: {sorted({base.scene_of(s) for s in val_s})}")
-    kw = dict(goal_xy_order=args.goal_xy_order, with_traj=True, traj_steps=cfg.traj_steps)
+    kw = dict(goal_xy_order=args.goal_xy_order, with_traj=True, traj_steps=cfg.traj_steps, traj_starts=args.traj_starts)
     train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, **kw)
     val_ds = LayaS2Dataset(val_s, tok, cfg, args.teacher_latents, augment=False, **kw)
     collate = partial(collate_laya_s2, pad_id=tok.pad_token_id)
@@ -222,6 +234,10 @@ def main():
         print(
             f"stage {args.stage} | params {n_all / 1e6:.1f}M (trajectory head {n_traj / 1e6:.1f}M, trainable "
             f"{n_train / 1e6:.1f}M) | train {len(train_ds)} val {len(val_ds)} | steps {total}"
+        )
+        print(
+            f"trajectory head: fuse_layers={cfg.traj_fuse_layers} goal_mark={cfg.traj_goal_mark} "
+            f"| starting frames per goal sample: {args.traj_starts}"
         )
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)

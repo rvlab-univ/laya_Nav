@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import time
 from dataclasses import asdict
 from functools import partial
@@ -61,6 +62,9 @@ def parse_args():
         choices=["scene", "episode"],
         help="scene: hold out whole scenes (measures generalization to unseen houses, like val_unseen)",
     )
+    ap.add_argument(
+        "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
+    )
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -77,6 +81,16 @@ def is_val(s, ratio, split="scene"):
     key = scene_of(s) if split == "scene" else f"{s['video']}|{s['ep_id']}"
     h = hashlib.md5(key.encode()).hexdigest()
     return int(h[:8], 16) / 0xFFFFFFFF < ratio
+
+
+def split_samples(samples, ratio, split="scene", max_val=-1, seed=0):
+    """Train / held-out samples; max_val > 0 keeps a fixed random subset of the held-out ones (large datasets hold out
+    thousands of scenes, and every validation pass reads all of them)."""
+    train = [s for s in samples if not is_val(s, ratio, split)]
+    val = [s for s in samples if is_val(s, ratio, split)]
+    if 0 < max_val < len(val):
+        val = random.Random(seed).sample(val, max_val)
+    return train, val
 
 
 def to_device(batch, device):
@@ -155,8 +169,7 @@ def main():
     tok = AutoTokenizer.from_pretrained(args.text_encoder)
 
     samples = load_vln_samples(args.vln_dataset_use)
-    train_s = [s for s in samples if not is_val(s, args.val_ratio, args.val_split)]
-    val_s = [s for s in samples if is_val(s, args.val_ratio, args.val_split)]
+    train_s, val_s = split_samples(samples, args.val_ratio, args.val_split, args.max_val_samples)
     if main_proc and args.val_split == "scene":
         print(f"val scenes ({args.val_split} split): {sorted({scene_of(s) for s in val_s})}")
     train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, goal_xy_order=args.goal_xy_order)
