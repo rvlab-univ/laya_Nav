@@ -31,6 +31,9 @@ from internnav.model.basemodel.laya_s2 import (
     LayaS2Config,
     LossWeights,
     compute_loss,
+    instruction_chunks,
+    match_loss,
+    mismatched,
 )
 
 
@@ -52,6 +55,9 @@ def parse_args():
     ap.add_argument("--lr_text", type=float, default=3e-5)
     ap.add_argument("--lr_vision", type=float, default=1e-5)
     ap.add_argument("--freeze_vision", action="store_true")
+    ap.add_argument(
+        "--grounding", type=int, default=0, choices=[0, 1], help="SigLIP2 phrase-match prior (grounding.py)"
+    )
     ap.add_argument("--weight_decay", type=float, default=0.01)
     ap.add_argument("--warmup_ratio", type=float, default=0.02)
     ap.add_argument("--grad_clip", type=float, default=1.0)
@@ -97,17 +103,47 @@ def to_device(batch, device):
     return {k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
 
 
+PER_PAIR = ("traj", "traj_idx", "traj_slot")  # outputs indexed by trajectory pair, not by sample
+
+
+def decision_forward(model, batch, weights, **extra):
+    """Decision forward with the instruction phrases (grounding). With ``weights.match`` > 0, a copy of the batch
+    with another sample's instruction runs in the same call (one forward per backward keeps DDP happy).
+
+    Returns the outputs of the real batch, and the matching loss and stats (None and {} when off). ``extra``
+    (traj_pixels / traj_mask) applies to the real batch only.
+    """
+    m = model.module if isinstance(model, DDP) else model
+    keys = ("input_ids", "text_mask", "hist_pixels", "hist_mask", "cur_pixels", "down_pixels")
+    args = [batch[k] for k in keys]
+    goal_xy = torch.where(batch["is_goal"][:, None], batch["goal_xy"], torch.full_like(batch["goal_xy"], 0.5))
+    ins = batch["instructions"]
+    if not (weights.match > 0 and m.cfg.match_head):
+        return model(*args, goal_xy=goal_xy, chunks=instruction_chunks(m, ins), **extra), None, {}
+
+    B, dev = len(ins), goal_xy.device
+    other = mismatched(ins)
+    valid = torch.tensor([j >= 0 for j in other], device=dev)
+    idx = torch.tensor([j if j >= 0 else i for i, j in enumerate(other)], device=dev)
+    twice = [torch.cat([args[0], args[0][idx]]), torch.cat([args[1], args[1][idx]])]
+    twice += [torch.cat([a, a]) for a in args[2:]]
+    if "traj_mask" in extra:  # no trajectory for the mismatched copies
+        extra = dict(extra, traj_mask=torch.cat([extra["traj_mask"], torch.zeros_like(extra["traj_mask"])]),
+                     traj_pixels=torch.cat([extra["traj_pixels"], extra["traj_pixels"]]))
+    out = model(*twice, goal_xy=torch.cat([goal_xy, goal_xy]),
+                chunks=instruction_chunks(m, list(ins) + [ins[j] for j in idx.tolist()]), **extra)
+    pos = {k: (v if k in PER_PAIR else v[:B]) for k, v in out.items()}
+    l_match, stats = match_loss(out["match_logit"][:B], out["match_logit"][B:], valid)
+    return pos, l_match, stats
+
+
 def run(model, batch, weights):
-    out = model(
-        batch["input_ids"],
-        batch["text_mask"],
-        batch["hist_pixels"],
-        batch["hist_mask"],
-        batch["cur_pixels"],
-        batch["down_pixels"],
-        goal_xy=torch.where(batch["is_goal"][:, None], batch["goal_xy"], torch.full_like(batch["goal_xy"], 0.5)),
-    )
-    return compute_loss(model.module if isinstance(model, DDP) else model, out, batch, weights)
+    out, l_match, mstats = decision_forward(model, batch, weights)
+    loss, stats = compute_loss(model.module if isinstance(model, DDP) else model, out, batch, weights)
+    if l_match is not None:
+        loss = loss + weights.match * l_match
+        stats.update(mstats, loss=loss.detach())
+    return loss, stats
 
 
 # each metric is averaged over the samples it is defined on
@@ -164,6 +200,8 @@ def main():
         image_std=list(ip.image_std),
         head_layers=args.head_layers,
         latent_layers=args.latent_layers,
+        grounding=bool(args.grounding),
+        match_head=args.w_match > 0,
     )
     weights = LossWeights(**{k: getattr(args, f"w_{k}") for k in asdict(LossWeights())})
     tok = AutoTokenizer.from_pretrained(args.text_encoder)

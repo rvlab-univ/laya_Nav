@@ -29,7 +29,7 @@ from internnav.dataset.laya_s2_dataset import (
     load_vln_samples,
     trajectory_target,
 )
-from internnav.model.basemodel.laya_s2 import LayaNav
+from internnav.model.basemodel.laya_s2 import LayaNav, instruction_chunks
 
 _spec = importlib.util.spec_from_file_location(
     "train_laya_s2", os.path.join(os.path.dirname(__file__), "train_laya_s2.py")
@@ -103,7 +103,8 @@ def collect(model, loader, device, own_goal):
     rows = {k: [] for k in ("pred", "pred_own", "target", "frac")}
     for batch in loader:
         b = base.to_device(batch, device)
-        x = dict(traj_pixels=b["traj_pixels"], traj_mask=b["traj_mask"])
+        chunks = instruction_chunks(model, b["instructions"])
+        x = dict(traj_pixels=b["traj_pixels"], traj_mask=b["traj_mask"], chunks=chunks)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
             out = model(*(b[k] for k in keys), goal_xy=b["goal_xy"], **x)  # ground-truth goal, as in training
             idx, slot = out["traj_idx"], out["traj_slot"]

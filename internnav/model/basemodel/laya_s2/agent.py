@@ -17,7 +17,7 @@ from PIL import Image
 from internnav.dataset.laya_s2_dataset import make_image_transform
 
 from .laya_nav import LayaNav
-from .laya_s2 import LayaS2
+from .laya_s2 import LayaS2, instruction_chunks
 
 
 class LayaS2Agent(nn.Module):
@@ -54,6 +54,7 @@ class LayaS2Agent(nn.Module):
                 hist_mask.to(dev),
                 self.transform(cur_image)[None].to(dev),
                 self.transform(down_image)[None].to(dev),
+                chunks=instruction_chunks(self.student, [instruction]),
             )
         return self.student.decide(self._out)[0]
 

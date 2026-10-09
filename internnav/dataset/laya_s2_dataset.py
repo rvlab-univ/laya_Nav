@@ -185,6 +185,7 @@ class LayaS2Dataset(Dataset):
 
         down_raw = Image.open(frame_path(s, start, look_down=True)).convert("RGB")
         item = dict(
+            instruction=s["instruction"],  # raw text, for the grounding prior and the matching loss
             input_ids=torch.tensor(
                 self.tok(s["instruction"], truncation=True, max_length=self.cfg.max_text_len)["input_ids"]
             ),
@@ -250,7 +251,7 @@ def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tenso
     ids = [b["input_ids"] for b in batch]
     input_ids = torch.nn.utils.rnn.pad_sequence(ids, batch_first=True, padding_value=pad_id)
     text_mask = torch.arange(input_ids.shape[1])[None] < torch.tensor([len(x) for x in ids])[:, None]
-    out = dict(input_ids=input_ids, text_mask=text_mask)
+    out = dict(input_ids=input_ids, text_mask=text_mask, instructions=[b["instruction"] for b in batch])
     for k in ("hist_pixels", "hist_mask", "cur_pixels", "down_pixels", "goal_xy", "latent"):
         out[k] = torch.stack([b[k] for b in batch])
     for k in ("is_goal", "latent_mask", "action_idx"):

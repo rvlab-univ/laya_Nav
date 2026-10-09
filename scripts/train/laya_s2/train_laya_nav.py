@@ -61,6 +61,8 @@ def parse_args():
     ap.add_argument("--traj_fuse_layers", type=int, default=2, help="0 = head as in the first C1 runs")
     ap.add_argument("--traj_goal_mark", type=int, default=1, choices=[0, 1], help="0 = head as in the first C1 runs")
     ap.add_argument("--traj_starts", type=int, default=4, help="starting frames per goal sample (1 = first C1 runs)")
+    # add-ons, also on a checkpoint trained without them (they start at zero output); see grounding.py
+    ap.add_argument("--grounding", type=int, default=0, choices=[0, 1], help="SigLIP2 phrase-match prior")
     ap.add_argument("--goal_xy_order", default="xy", choices=["xy", "yx"])
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--max_steps", type=int, default=-1)
@@ -97,18 +99,12 @@ def set_train_mode(model, stage):
 
 def run(model, batch, weights, tweights, stage):
     m = model.module if isinstance(model, DDP) else model
-    out = model(
-        batch["input_ids"],
-        batch["text_mask"],
-        batch["hist_pixels"],
-        batch["hist_mask"],
-        batch["cur_pixels"],
-        batch["down_pixels"],
-        goal_xy=torch.where(batch["is_goal"][:, None], batch["goal_xy"], torch.full_like(batch["goal_xy"], 0.5)),
-        traj_pixels=batch["traj_pixels"],
-        traj_mask=batch["traj_mask"],
-    )
+    traj = dict(traj_pixels=batch["traj_pixels"], traj_mask=batch["traj_mask"])
+    out, l_match, mstats = base.decision_forward(model, batch, weights if stage == "c2" else _no_match(weights), **traj)
     l_dec, stats = compute_loss(m, out, batch, weights)
+    if l_match is not None:
+        l_dec = l_dec + weights.match * l_match
+        stats.update(mstats)
     if "traj" in out:
         idx = out["traj_idx"]
         target = batch["traj"][idx, out["traj_slot"]]  # one target per (sample, starting frame) pair
@@ -141,7 +137,13 @@ def evaluate(model, loader, weights, tweights, stage, device):
     return {k: v / max(tot[METRIC_WEIGHT.get(k, "n")], 1) for k, v in tot.items() if not k.startswith("n")}
 
 
+def _no_match(weights):
+    # c1 trains the trajectory head only: no matching negatives (they would double the frozen forward for nothing)
+    return LossWeights(**{**asdict(weights), "match": 0.0})
+
+
 def build_model(args):
+    addons = {k: v for k, v in (("grounding", bool(args.grounding)), ("match_head", args.w_match > 0)) if v}
     traj_cfg = dict(
         traj_dim=args.traj_dim,
         traj_layers=args.traj_layers,
@@ -149,9 +151,10 @@ def build_model(args):
         traj_goal_mark=bool(args.traj_goal_mark),
     )
     if args.init_from:
-        return LayaNav.load_any(args.init_from, **traj_cfg) if os.path.exists(args.init_from) else None
+        return LayaNav.load_any(args.init_from, addons=addons, **traj_cfg) if os.path.exists(args.init_from) else None
     ip = AutoImageProcessor.from_pretrained(LayaNavConfig.vision_encoder)
-    return LayaNav.from_config(LayaNavConfig(image_mean=list(ip.image_mean), image_std=list(ip.image_std), **traj_cfg))
+    cfg = LayaNavConfig(image_mean=list(ip.image_mean), image_std=list(ip.image_std), **traj_cfg, **addons)
+    return LayaNav.from_config(cfg)
 
 
 def main():
@@ -237,7 +240,8 @@ def main():
         )
         print(
             f"trajectory head: fuse_layers={cfg.traj_fuse_layers} goal_mark={cfg.traj_goal_mark} "
-            f"| starting frames per goal sample: {args.traj_starts}"
+            f"| starting frames per goal sample: {args.traj_starts} | grounding={cfg.grounding} "
+            f"match_head={cfg.match_head} (w_match={args.w_match})"
         )
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)

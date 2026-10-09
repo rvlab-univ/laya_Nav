@@ -162,6 +162,7 @@ def test_dataset_pipeline(tmp_path):
     assert turn["hist_mask"].sum() == 0  # turn at frame 0 has no history
     batch = collate_laya_s2(items, pad_id=0)
     assert batch["hist_pixels"].shape == (4, 3, 3, 32, 32)
+    assert batch["instructions"][0] == "walk past the sofa and stop at the door"  # raw text for grounding / matching
     assert batch["is_goal"].tolist() == [True, True, False, False]
     assert GOAL == 0
 

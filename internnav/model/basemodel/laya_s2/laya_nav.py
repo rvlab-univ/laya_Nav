@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .laya_s2 import CONFIG_NAME, FourierXY, LayaS2, LayaS2Config
+from .laya_s2 import ADDON_PREFIXES, CONFIG_NAME, FourierXY, LayaS2, LayaS2Config
 
 TRAJ_SEG_MEMORY, TRAJ_SEG_GOAL_FRAME, TRAJ_SEG_CUR_FRAME = range(3)
 GOAL_MARK_SIGMA = 0.75  # patches, same spread as the decision target around the goal
@@ -77,13 +77,19 @@ class LayaNav(LayaS2):
         cfg = LayaNavConfig(**{**vars(s2.cfg), **traj_cfg})
         model = cls(cfg, s2.text, s2.vision)
         missing, unexpected = model.load_state_dict(s2.state_dict(), strict=False)
-        assert not unexpected and all(k.startswith("traj_") for k in missing), (missing, unexpected)
+        new = ("traj_",) + ADDON_PREFIXES
+        assert not unexpected and all(k.startswith(new) for k in missing), (missing, unexpected)
         return model
 
     @classmethod
-    def load_any(cls, ckpt_dir: str, **traj_cfg) -> "LayaNav":
-        """LayaNav checkpoint as is, or a Laya-S2 checkpoint with a new trajectory head (``traj_cfg``)."""
-        return cls.from_pretrained(ckpt_dir) if _is_nav(ckpt_dir) else cls.from_laya_s2(ckpt_dir, **traj_cfg)
+    def load_any(cls, ckpt_dir: str, addons=None, **traj_cfg) -> "LayaNav":
+        """LayaNav checkpoint as is, or a Laya-S2 checkpoint with a new trajectory head (``traj_cfg``).
+
+        ``addons`` (e.g. ``dict(grounding=True, match_head=True)``) are enabled on either kind of checkpoint."""
+        addons = addons or {}
+        if _is_nav(ckpt_dir):
+            return cls.from_pretrained(ckpt_dir, **addons)
+        return cls.from_laya_s2(ckpt_dir, **traj_cfg, **addons)
 
     def traj_parameters(self):
         return [p for n, p in self.named_parameters() if n.startswith("traj_")]
