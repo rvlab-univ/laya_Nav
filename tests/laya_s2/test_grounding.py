@@ -136,3 +136,27 @@ def test_agent_with_grounding():
     d = agent.decide("walk to the sofa, then stop", [img] * 2, img, img)
     agent.start_goal(d, img, None)
     assert agent.plan(img, None).shape == (1, 32, 3)
+
+
+def test_phrase_cache_refills_after_clearing():
+    """A cached phrase of the batch survives the cache being cleared (KeyError: 'stairs' on the server)."""
+    from transformers import BatchEncoding
+
+    from internnav.model.basemodel.laya_s2.grounding import SiglipGrounder
+
+    class TextModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = nn.Linear(1, 4)
+
+        def get_text_features(self, input_ids):
+            return self.w(input_ids.float())
+
+    g = SiglipGrounder.__new__(SiglipGrounder)
+    nn.Module.__init__(g)
+    g.model, g._text_cache = TextModel(), {}
+    g.tok = lambda texts, **kw: BatchEncoding({"input_ids": torch.tensor([[len(t)] for t in texts])})
+    g.phrases([["stairs"]], 2)
+    g._text_cache.update({f"x{i}": torch.zeros(4) for i in range(50001)})
+    emb, mask = g.phrases([["stairs", "door"]], 2)
+    assert mask.all() and torch.allclose(emb.norm(dim=-1), torch.ones(1, 2))

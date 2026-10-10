@@ -63,12 +63,14 @@ class SiglipGrounder(nn.Module):
     def phrases(self, chunks: List[List[str]], m: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """chunks per sample -> embeddings [B, m, D] (unit length) and mask [B, m]."""
         dev = next(self.model.parameters()).device
+        # instructions repeat within an episode; keep the cache bounded. Clear before choosing what to embed, so
+        # phrases of this batch that were cached are embedded again rather than dropped
+        if len(self._text_cache) > 50000:
+            self._text_cache.clear()
         new = sorted({c for cs in chunks for c in cs[:m] if c not in self._text_cache})
         if new:
             t = self.tok(new, padding="max_length", max_length=64, truncation=True, return_tensors="pt").to(dev)
             emb = F.normalize(self.model.get_text_features(**t).float(), dim=-1)
-            if len(self._text_cache) > 50000:  # instructions repeat within an episode; keep the cache bounded
-                self._text_cache.clear()
             self._text_cache.update(zip(new, emb))
         d = next(iter(self._text_cache.values())).shape[-1]
         out = torch.zeros(len(chunks), m, d, device=dev)
