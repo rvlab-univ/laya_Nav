@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | v1 | LayaNav 최초: Laya-S2 판단 + 경로 헤드로 DualVLN System 1 대체 | 학습 완료, 경로 예측 나쁨 | `laya_nav_c1` | [구현 보고서](../IMPLEMENTATION_REPORT.md) |
 | v2 | System 1: 경로 헤드 보강(프레임 융합, 목표 표시, 출발 지점 4개) + 큰 데이터셋 | 학습 완료. 정답 목표 경로 오차 0.09 m. 병목은 System 2 목표 선택(정확도 0.45), 판단 과적합 | `laya_nav_mix_c1`, `laya_nav_mix_c2` | [v2_path_head.md](v2_path_head.md) |
-| v3 | System 2: 지시문–화면 연결(SigLIP2 근거 지도, 지시문 짝 맞추기) | 구현 완료, 학습 전 | `laya_nav_v3_c2` (예정) | [v3_grounding.md](v3_grounding.md) |
+| v3 | System 2: 지시문–화면 연결(SigLIP2 근거 지도, 지시문 짝 맞추기) | 학습 완료. 물체 이름에 반응하기 시작(KIMM TVD 0.017 → 0.041, 근거 지도 효과). 목표 정확도는 그대로(0.45) | `laya_nav_v3_c2` | [v3_grounding.md](v3_grounding.md) |
 
 ## 이름 규칙
 
