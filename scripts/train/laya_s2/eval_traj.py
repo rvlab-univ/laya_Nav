@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from internnav.dataset.laya_s2_dataset import (
+    MEMORY_KEYS,
     LayaS2Dataset,
     collate_laya_s2,
     load_vln_samples,
@@ -105,6 +106,7 @@ def collect(model, loader, device, own_goal):
         b = base.to_device(batch, device)
         chunks = instruction_chunks(model, b["instructions"])
         x = dict(traj_pixels=b["traj_pixels"], traj_mask=b["traj_mask"], chunks=chunks)
+        x.update({k: b[k] for k in MEMORY_KEYS if k in b})  # v4 memory inputs
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
             out = model(*(b[k] for k in keys), goal_xy=b["goal_xy"], **x)  # ground-truth goal, as in training
             idx, slot = out["traj_idx"], out["traj_slot"]

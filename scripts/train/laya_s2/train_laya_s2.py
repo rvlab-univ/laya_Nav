@@ -22,6 +22,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoImageProcessor, AutoTokenizer
 
 from internnav.dataset.laya_s2_dataset import (
+    MEMORY_KEYS,
     LayaS2Dataset,
     collate_laya_s2,
     load_vln_samples,
@@ -74,6 +75,7 @@ def parse_args():
         "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
     )
     add_stop_repeat_args(ap)
+    add_memory_args(ap, keep_checkpoint=False)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -90,6 +92,31 @@ def add_stop_repeat_args(ap):
         default=1,
         help="copies of each STOP sample in validation; 5 reproduces the validation set of runs before this option",
     )
+
+
+MEMORY_FIELDS = ("num_history", "hist_recent", "hist_pose", "motion_tokens", "hist_grad")
+
+
+def add_memory_args(ap, keep_checkpoint):
+    """v4 memory; with keep_checkpoint the defaults (None) keep the values of the --init_from checkpoint."""
+    d = (lambda v: None) if keep_checkpoint else (lambda v: v)
+    c = LayaS2Config
+    ap.add_argument("--num_history", type=int, default=d(c.num_history), help="history frames (v4: 32)")
+    ap.add_argument("--hist_recent", type=int, default=d(c.hist_recent), help="latest frames among them (v4: 16)")
+    ap.add_argument("--hist_pose", type=int, default=d(int(c.hist_pose)), choices=[0, 1], help="v4: 1")
+    ap.add_argument("--motion_tokens", type=int, default=d(c.motion_tokens), help="last steps as tokens (v4: 8)")
+    ap.add_argument("--hist_grad", type=int, default=d(int(c.hist_grad)), choices=[0, 1],
+                    help="0: history frames encoded without gradients (v4)")
+
+
+def memory_overrides(args):
+    """Config values given on the command line (bool fields from 0 / 1)."""
+    out = {}
+    for k in MEMORY_FIELDS:
+        v = getattr(args, k)
+        if v is not None:
+            out[k] = bool(v) if k in ("hist_pose", "hist_grad") else v
+    return out
 
 
 def scene_of(s):
@@ -136,10 +163,11 @@ def decision_forward(model, batch, weights, **extra):
     m = model.module if isinstance(model, DDP) else model
     keys = ("input_ids", "text_mask", "hist_pixels", "hist_mask", "cur_pixels", "down_pixels")
     args = [batch[k] for k in keys]
+    mem = {k: batch[k] for k in MEMORY_KEYS if k in batch}  # v4 memory inputs
     goal_xy = torch.where(batch["is_goal"][:, None], batch["goal_xy"], torch.full_like(batch["goal_xy"], 0.5))
     ins = batch["instructions"]
     if not (weights.match > 0 and m.cfg.match_head):
-        return model(*args, goal_xy=goal_xy, chunks=instruction_chunks(m, ins), **extra), None, {}
+        return model(*args, goal_xy=goal_xy, chunks=instruction_chunks(m, ins), **mem, **extra), None, {}
 
     B, dev = len(ins), goal_xy.device
     other = mismatched(ins)
@@ -152,8 +180,9 @@ def decision_forward(model, batch, weights, **extra):
                      traj_pixels=torch.cat([extra["traj_pixels"], extra["traj_pixels"]]))
     if "pred_goal_mix" in extra:  # the mismatched copies keep the true goal
         extra = dict(extra, pred_goal_mix=torch.cat([extra["pred_goal_mix"], torch.zeros_like(extra["pred_goal_mix"])]))
+    mem = {k: torch.cat([v, v]) for k, v in mem.items()}
     out = model(*twice, goal_xy=torch.cat([goal_xy, goal_xy]),
-                chunks=instruction_chunks(m, list(ins) + [ins[j] for j in idx.tolist()]), **extra)
+                chunks=instruction_chunks(m, list(ins) + [ins[j] for j in idx.tolist()]), **mem, **extra)
     pos = {k: (v if k in PER_PAIR else v[:B]) for k, v in out.items()}
     l_match, stats = match_loss(out["match_logit"][:B], out["match_logit"][B:], valid)
     return pos, l_match, stats
@@ -231,6 +260,7 @@ def main():
         head_layers=args.head_layers,
         latent_layers=args.latent_layers,
         max_text_len=args.max_text_len,
+        **memory_overrides(args),
         grounding=bool(args.grounding),
         match_head=args.w_match > 0,
     )

@@ -24,7 +24,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .laya_s2 import ADDON_PREFIXES, CONFIG_NAME, FourierXY, LayaS2, LayaS2Config
+from .laya_s2 import ADDON_PREFIXES, CONFIG_NAME, FourierXY, LayaS2, LayaS2Config, adapt_state_dict
 
 TRAJ_SEG_MEMORY, TRAJ_SEG_GOAL_FRAME, TRAJ_SEG_CUR_FRAME = range(3)
 GOAL_MARK_SIGMA = 0.75  # patches, same spread as the decision target around the goal
@@ -76,7 +76,7 @@ class LayaNav(LayaS2):
         s2 = LayaS2.from_pretrained(ckpt_dir)
         cfg = LayaNavConfig(**{**vars(s2.cfg), **traj_cfg})
         model = cls(cfg, s2.text, s2.vision)
-        missing, unexpected = model.load_state_dict(s2.state_dict(), strict=False)
+        missing, unexpected = model.load_state_dict(adapt_state_dict(model, s2.state_dict()), strict=False)
         new = ("traj_",) + ADDON_PREFIXES
         assert not unexpected and all(k.startswith(new) for k in missing), (missing, unexpected)
         return model
@@ -120,10 +120,6 @@ class LayaNav(LayaS2):
         return out
 
     # ------------------------------------------------------------------ planning (System 1 role)
-    def encode_frame(self, pixels: torch.Tensor) -> torch.Tensor:
-        """[B, 3, S, S] -> [B, P, d] projected patch features (same space as ``down_feat``)."""
-        return self.vis_proj(self.encode_images(pixels))
-
     def plan_memory(self, out: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Decision outputs -> [B, M, traj_dim] memory kept until the next decision."""
         goal = self.traj_mem_proj(out["goal_token"])[:, None]

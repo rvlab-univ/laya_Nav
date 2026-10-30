@@ -30,8 +30,14 @@ import torch.nn.functional as F
 SEG_TEXT, SEG_ACTION, SEG_HIST, SEG_CUR, SEG_DOWN = range(5)
 CONFIG_NAME = "laya_s2_config.json"
 UNUSED_PREFIXES = ("vision.head.",)  # SigLIP pooling head, removed (see LayaS2.__init__)
-ADDON_PREFIXES = ("ground_proj.", "match_head.")  # may be added to a checkpoint that was trained without them
+ADDON_PREFIXES = (  # may be added to a checkpoint that was trained without them
+    "ground_proj.",
+    "match_head.",
+    "hist_pose_proj.",
+    "motion_",
+)
 WEIGHTS_NAME = "laya_s2.pt"
+N_MOTION_ACTIONS = 5  # internnav.dataset.laya_s2_dataset.N_MOTION_ACTIONS (none, STOP, FORWARD, LEFT, RIGHT)
 
 
 @dataclass
@@ -57,6 +63,11 @@ class LayaS2Config:
     grounding_model: str = "google/siglip2-base-patch16-224"
     grounding_chunks: int = 6
     match_head: bool = False  # instruction / view matching score (auxiliary loss against shuffled instructions)
+    # v4 memory (all off by default, so that older checkpoints load unchanged)
+    hist_recent: int = 0  # the latest frames as history, the other num_history - hist_recent spread over the older past
+    hist_pose: bool = False  # add where each history frame was seen from (relative pose, steps ago) to its tokens
+    motion_tokens: int = 0  # tokens for the last steps: action taken and the move measured (odometry)
+    hist_grad: bool = True  # False: history frames are encoded without gradients (training cost of long histories)
 
     def save(self, out_dir: str):
         os.makedirs(out_dir, exist_ok=True)
@@ -95,6 +106,17 @@ class FourierXY(nn.Module):
     def forward(self, xy: torch.Tensor) -> torch.Tensor:
         a = xy[..., None].float() * self.freqs  # [B, 2, F]
         return self.proj(torch.cat([a.sin(), a.cos()], -1).flatten(-2))
+
+
+def adapt_state_dict(model: nn.Module, sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """A checkpoint with another number of history slots: its slot embeddings are resampled along the slot axis
+    (oldest to newest), so that e.g. a v3 checkpoint (8 slots) can start a v4 model (32 slots)."""
+    k = "hist_slot_emb.weight"
+    if k in sd and hasattr(model, "hist_slot_emb") and sd[k].shape != model.hist_slot_emb.weight.shape:
+        old = sd[k].float().T[None]  # [1, d, n_old]
+        new = F.interpolate(old, size=model.hist_slot_emb.num_embeddings, mode="linear", align_corners=True)
+        sd = dict(sd, **{k: new[0].T.contiguous().to(sd[k].dtype)})
+    return sd
 
 
 class LayaS2(nn.Module):
@@ -146,6 +168,18 @@ class LayaS2(nn.Module):
             nn.init.zeros_(self.ground_proj[-1].bias)
         if cfg.match_head:
             self.match_head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, 1))
+        if cfg.hist_pose:  # zero output layer: added to a checkpoint, history tokens start as before
+            self.hist_pose_proj = nn.Sequential(nn.Linear(5, d), nn.GELU(), nn.Linear(d, d))
+            nn.init.zeros_(self.hist_pose_proj[-1].weight)
+            nn.init.zeros_(self.hist_pose_proj[-1].bias)
+        if cfg.motion_tokens:
+            self.motion_act_emb = nn.Embedding(N_MOTION_ACTIONS, d)
+            self.motion_disp = nn.Sequential(nn.Linear(3, d), nn.GELU(), nn.Linear(d, d))
+            self.motion_pos = nn.Parameter(torch.zeros(cfg.motion_tokens, d))
+            nn.init.normal_(self.motion_act_emb.weight, std=0.02)
+            nn.init.normal_(self.motion_pos, std=0.02)
+            nn.init.zeros_(self.motion_disp[-1].weight)
+            nn.init.zeros_(self.motion_disp[-1].bias)
         self._grounder = []  # frozen SigLIP2, loaded on first use; kept out of the module tree and the checkpoint
 
         self.latent_queries = nn.Parameter(torch.randn(cfg.n_query, d) * 0.02)
@@ -181,7 +215,7 @@ class LayaS2(nn.Module):
     def load_weights(self, path: str, map_location="cpu"):
         """Load a saved state dict. Tensors of the removed SigLIP pooling head (older checkpoints) are ignored, and
         add-on modules (grounding, matching) may be missing when they were just enabled on an older checkpoint."""
-        sd = torch.load(path, map_location=map_location)
+        sd = adapt_state_dict(self, torch.load(path, map_location=map_location))
         missing, unexpected = self.load_state_dict(
             {k: v for k, v in sd.items() if not k.startswith(UNUSED_PREFIXES)}, strict=False
         )
@@ -211,6 +245,11 @@ class LayaS2(nn.Module):
     def encode_images(self, pixels: torch.Tensor) -> torch.Tensor:
         h = self.vision(pixel_values=pixels).last_hidden_state
         return h[:, -self.n_patch :]  # drop CLS / register tokens if the backbone has them
+
+    def encode_frame(self, pixels: torch.Tensor) -> torch.Tensor:
+        """[N, 3, S, S] -> [N, P, d] projected patch features (the decision's frame tokens before pooling; reused by
+        the LayaNav planner and cached per history frame by the agents)."""
+        return self.vis_proj(self.encode_images(pixels))
 
     @property
     def grounder(self):
@@ -259,19 +298,41 @@ class LayaS2(nn.Module):
         chunks: Optional[List[List[str]]] = None,  # instruction phrases (grounding.split_instruction), if grounding
         pred_goal_mix: Optional[torch.Tensor] = None,  # [B] bool: rows that may use the model's own goal instead
         pred_goal_radius: float = 1.5,  # ... but only when it lies within this many patches of goal_xy
+        hist_pose: Optional[torch.Tensor] = None,  # [B, H, 5] v4: where each history frame was seen from
+        motion_act: Optional[torch.Tensor] = None,  # [B, M] v4: last steps' actions (dataset.MOTION_ACTION ids)
+        motion_disp: Optional[torch.Tensor] = None,  # [B, M, 3] v4: last steps' measured moves
+        hist_feats: Optional[torch.Tensor] = None,  # [n_hist, P, d] precomputed encode_frame() of the valid history
     ) -> Dict[str, torch.Tensor]:
         B, H = hist_mask.shape
         dev = input_ids.device
         hist_mask = hist_mask.bool()
 
-        # one vision pass over every real frame
+        # vision: history frames (precomputed by the agent, or without gradients for long histories), current, down
         n_hist = int(hist_mask.sum())
-        frames = torch.cat([hist_pixels[hist_mask], cur_pixels, down_pixels], 0)
-        vis = self.vis_proj(self.encode_images(frames))
+        if hist_feats is None and (self.cfg.hist_grad or not torch.is_grad_enabled()):
+            vis = self.encode_frame(torch.cat([hist_pixels[hist_mask], cur_pixels, down_pixels], 0))
+        else:
+            new = self.encode_frame(torch.cat([cur_pixels, down_pixels], 0))
+            if hist_feats is None and n_hist:
+                with torch.no_grad():
+                    hist_feats = self.encode_frame(hist_pixels[hist_mask])
+            elif hist_feats is None:
+                hist_feats = new[:0]
+            vis = torch.cat([hist_feats.to(new.dtype), new], 0)
         hist_tok = self._pool(vis[:n_hist], self.cfg.hist_pool) + self.pos_hist + self.seg_emb.weight[SEG_HIST]
         cur_tok = self._pool(vis[n_hist : n_hist + B], self.cfg.cur_pool) + self.pos_cur + self.seg_emb.weight[SEG_CUR]
         down_tok = vis[n_hist + B :] + self.pos_down + self.seg_emb.weight[SEG_DOWN]
         hist_tok = hist_tok + self.hist_slot_emb(hist_mask.nonzero()[:, 1])[:, None]
+        if self.cfg.hist_pose and hist_pose is not None:
+            hist_tok = hist_tok + self.hist_pose_proj(hist_pose[hist_mask].to(hist_tok.dtype))[:, None]
+        mot_tok = None
+        if self.cfg.motion_tokens:
+            M = self.cfg.motion_tokens
+            if motion_act is None:
+                motion_act = torch.zeros(B, M, dtype=torch.long, device=dev)
+                motion_disp = torch.zeros(B, M, 3, device=dev)
+            mot_tok = (self.motion_act_emb(motion_act) + self.motion_disp(motion_disp.to(hist_tok.dtype))
+                       + self.motion_pos + self.seg_emb.weight[SEG_ACTION])  # [B, M, d]
         if self.cfg.grounding:
             assert chunks is not None and len(chunks) == B, "grounding needs the instruction phrases (chunks)"
             g_cur, g_down = self.grounding_features(chunks, cur_pixels, down_pixels)
@@ -286,7 +347,10 @@ class LayaS2(nn.Module):
         hist_split = torch.split(hist_tok, hist_mask.sum(1).tolist())
         for b in range(B):
             t = text_emb[b, : int(text_mask[b].sum())]
-            parts = [t, act_tok.to(dtype), hist_split[b].flatten(0, 1).to(dtype), cur_tok[b].to(dtype)]
+            parts = [t, act_tok.to(dtype)]
+            if mot_tok is not None:
+                parts.append(mot_tok[b].to(dtype))
+            parts += [hist_split[b].flatten(0, 1).to(dtype), cur_tok[b].to(dtype)]
             a_start.append(t.shape[0])
             d_start.append(sum(p.shape[0] for p in parts))
             seqs.append(torch.cat(parts + [down_tok[b].to(dtype)], 0))

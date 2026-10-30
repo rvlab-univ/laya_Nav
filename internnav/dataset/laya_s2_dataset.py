@@ -34,7 +34,10 @@ def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, n
         n = len(actions)
         if n < 4:
             continue
-        base = dict(video=video, ep_id=ep_id, height=height, pitch_1=pitch_1, pitch_2=pitch_2, instruction=instruction)
+        # poses / actions are shared by the episode's samples (not copied): memory features (v4) and trajectory targets
+        poses = item.get(f"poses_{height}cm_{pitch_2}deg")
+        base = dict(video=video, ep_id=ep_id, height=height, pitch_1=pitch_1, pitch_2=pitch_2, instruction=instruction,
+                    poses=poses, acts=actions)
         for r in range(n // sample_step + 1):
             start = r * sample_step
             if start == n or start == n - 1:
@@ -50,9 +53,7 @@ def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, n
                     turn.append(actions[i])
                 turns.append(dict(base, start=start, kind=TURN, action=turn[0]))
             elif goal_len >= 3:
-                # poses (shared per episode, not copied) feed the trajectory targets of LayaNav
-                poses = item.get(f"poses_{height}cm_{pitch_2}deg")
-                goals.append(dict(base, start=start, kind=GOAL, goal=list(goal), goal_len=goal_len, poses=poses))
+                goals.append(dict(base, start=start, kind=GOAL, goal=list(goal), goal_len=goal_len))
         stops.append(dict(base, start=n - 1, kind=STOP, action=0))
     return goals, turns, stops
 
@@ -120,6 +121,71 @@ def trajectory_target(s: Dict, cid: int, steps: int) -> np.ndarray:
     return clip_or_pad(deltas, steps).astype(np.float32)
 
 
+def history_ids(n_past: int, n: int, recent: int = 0) -> List[int]:
+    """Frames fed as history out of the n_past frames before the current one: the ``recent`` latest frames, plus
+    the remaining slots spread evenly over the older ones (recent = 0: all n spread over the whole past, as before).
+    Shared by the dataset and the agents, so training and inference see the same frames."""
+    if n_past <= 0:
+        return []
+    if recent <= 0:
+        return np.unique(np.linspace(0, n_past - 1, n, dtype=np.int32)).tolist()
+    rec = list(range(max(0, n_past - recent), n_past))
+    n_old = n_past - len(rec)
+    old = np.unique(np.linspace(0, n_old - 1, n - len(rec), dtype=np.int32)).tolist() if n_old > 0 else []
+    return old + rec
+
+
+def robot_poses(extrinsics, camera_deg) -> np.ndarray:
+    """Camera extrinsics of an episode [T, 4, 4] -> robot (x, y, yaw) [T, 3] in the frame of the first one
+    (x forward, y left, yaw counter-clockwise)."""
+    from .internvla_n1_lerobot_dataset import get_trajectory_relative_to_frame
+
+    return get_trajectory_relative_to_frame(np.asarray(extrinsics, dtype=np.float64), camera_deg=camera_deg)
+
+
+# habitat STOP / FORWARD / LEFT / RIGHT -> motion token ids (0: no step / unknown)
+MOTION_ACTION = {0: 1, 1: 2, 2: 3, 3: 4}
+N_MOTION_ACTIONS = 5
+STEP_M, STEP_RAD = 0.25, np.radians(15.0)
+
+
+def _wrap(a):
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def memory_features(xyyaw, ids: List[int], cur: int, actions, n_hist: int, n_motion: int):
+    """Where each history frame was seen from, and the last steps (v4 memory).
+
+    xyyaw [>= cur + 1, 3]: robot poses in any fixed 2D frame (x, y, counter-clockwise yaw), or None if unknown;
+    ids: history frame ids (< cur); actions[i]: habitat action taken at frame i, or None.
+    Returns hist_pose [n_hist, 5] (x / 4 m, y / 4 m, sin yaw, cos yaw relative to the current pose, steps ago / 64)
+    and, for the n_motion steps before cur (oldest first), motion_act [n_motion] (MOTION_ACTION ids) and
+    motion_disp [n_motion, 3] (the measured move of that step in its own frame, in 0.25 m / 15 degree units).
+    """
+    hist_pose = np.zeros((n_hist, 5), np.float32)
+    motion_act = np.zeros(n_motion, np.int64)
+    motion_disp = np.zeros((n_motion, 3), np.float32)
+    have_pose = xyyaw is not None and len(xyyaw) > cur
+    if have_pose:
+        p = np.asarray(xyyaw, dtype=np.float64)
+        c, s = np.cos(-p[cur, 2]), np.sin(-p[cur, 2])
+        for j, i in enumerate(ids[:n_hist]):
+            d = p[i, :2] - p[cur, :2]
+            dyaw = _wrap(p[i, 2] - p[cur, 2])
+            hist_pose[j] = (c * d[0] - s * d[1]) / 4, (s * d[0] + c * d[1]) / 4, np.sin(dyaw), np.cos(dyaw), (cur - i) / 64
+    for j, k in enumerate(range(cur - n_motion, cur)):
+        if k < 0:
+            continue
+        if actions is not None and k < len(actions):
+            motion_act[j] = MOTION_ACTION.get(int(actions[k]), 0)
+        if have_pose:
+            c, s = np.cos(-p[k, 2]), np.sin(-p[k, 2])
+            d = p[k + 1, :2] - p[k, :2]
+            motion_disp[j] = ((c * d[0] - s * d[1]) / STEP_M, (s * d[0] + c * d[1]) / STEP_M,
+                              _wrap(p[k + 1, 2] - p[k, 2]) / STEP_RAD)
+    return hist_pose, motion_act, motion_disp
+
+
 def make_image_transform(cfg, augment: bool = False):
     s = cfg.image_size
     ops = [v2.ToImage(), v2.Resize((s, s), antialias=True)]
@@ -183,7 +249,7 @@ class LayaS2Dataset(Dataset):
     def __getitem__(self, i):
         s = self.samples[i]
         start = s["start"]
-        hist_ids = np.unique(np.linspace(0, start - 1, self.cfg.num_history, dtype=np.int32)).tolist() if start else []
+        hist_ids = history_ids(start, self.cfg.num_history, getattr(self.cfg, "hist_recent", 0))
 
         S = self.cfg.image_size
         hist = torch.zeros(self.cfg.num_history, 3, S, S)
@@ -208,6 +274,11 @@ class LayaS2Dataset(Dataset):
             latent=torch.zeros(self.cfg.n_query, self.cfg.latent_dim),
             latent_mask=False,
         )
+        if getattr(self.cfg, "hist_pose", False) or getattr(self.cfg, "motion_tokens", 0):
+            xyyaw = robot_poses(s["poses"], s["pitch_2"]) if s.get("poses") is not None else None
+            hp, ma, md = memory_features(xyyaw, hist_ids, start, s.get("acts"), self.cfg.num_history,
+                                         getattr(self.cfg, "motion_tokens", 0))
+            item.update(hist_pose=torch.from_numpy(hp), motion_act=torch.from_numpy(ma), motion_disp=torch.from_numpy(md))
         if s["kind"] == GOAL:
             a, b = s["goal"]
             x, y = (a, b) if self.goal_xy_order == "xy" else (b, a)
@@ -268,4 +339,10 @@ def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tenso
     if "traj" in batch[0]:  # [B, K, ...]
         for k in ("traj_pixels", "traj", "traj_mask"):
             out[k] = torch.stack([b[k] for b in batch])
+    for k in MEMORY_KEYS:  # v4 memory
+        if k in batch[0]:
+            out[k] = torch.stack([b[k] for b in batch])
     return out
+
+
+MEMORY_KEYS = ("hist_pose", "motion_act", "motion_disp")

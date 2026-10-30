@@ -91,6 +91,7 @@ def parse_args():
         "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
     )
     base.add_stop_repeat_args(ap)
+    base.add_memory_args(ap, keep_checkpoint=True)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -164,6 +165,7 @@ def _no_match(weights):
 
 def build_model(args):
     addons = {k: v for k, v in (("grounding", bool(args.grounding)), ("match_head", args.w_match > 0)) if v}
+    addons.update(base.memory_overrides(args))  # v4 memory, on any checkpoint (new parts start at zero output)
     traj_cfg = dict(
         traj_dim=args.traj_dim,
         traj_layers=args.traj_layers,
@@ -272,6 +274,10 @@ def main():
         print(
             f"instruction tokens: {cfg.max_text_len} | STOP copies train {args.stop_repeat} / val "
             f"{args.val_stop_repeat} | own goal for the trajectory head: {args.traj_pred_goal} (radius {pg_radius})"
+        )
+        print(
+            f"memory: {cfg.num_history} history frames ({cfg.hist_recent} latest) | pose={cfg.hist_pose} "
+            f"| motion tokens={cfg.motion_tokens} | history gradients={cfg.hist_grad}"
         )
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)

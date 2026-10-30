@@ -41,6 +41,20 @@ def _look_down_depth(ev, depth):
     return d
 
 
+def _pose2d(ev):
+    """Robot (x, y, yaw) on the floor plane: x = world x, y = -world z, yaw counter-clockwise (x forward, y left in
+    the robot's own frame, as in the training poses). None if the simulator state is not available."""
+    try:
+        from habitat.utils.geometry_utils import quaternion_rotate_vector
+
+        sim = getattr(ev.env, "_env", ev.env).sim  # HabitatEnv wraps habitat.Env as _env
+        st = sim.get_agent_state() if hasattr(sim, "get_agent_state") else sim.get_agent(0).get_state()
+        fwd = quaternion_rotate_vector(st.rotation, np.array([0.0, 0.0, -1.0]))
+        return (float(st.position[0]), float(-st.position[2]), float(np.arctan2(-fwd[2], fwd[0])))
+    except Exception:  # noqa: BLE001 - poses are optional inputs of the agent
+        return None
+
+
 def _local_actions(agent, timers, look_down_image, look_down_depth):
     """System 1 call (DualVLN DiT or the LayaNav head) -> the next MAX_LOCAL_STEPS discrete actions."""
     with torch.no_grad(), timers.s1():
@@ -70,6 +84,8 @@ def run_eval_laya_s2(ev):  # noqa: C901
 
         timers = EpisodeTimers()
         vis_frames, rgb_list, action_seq, local_actions, esc_probs = [], [], [], [], []
+        poses, taken = [], []  # robot pose at each frame and the action taken after it (-1: none), for v4 memory
+        agent.reset()
         step_id, forward_action = 0, 0
         done = False
         pixel_goal = None
@@ -77,6 +93,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
         while (not done) and (step_id <= ev.max_steps_per_episode):
             image = Image.fromarray(observations["rgb"]).convert('RGB')
             rgb_list.append(image.resize((ev.model_args.resize_w, ev.model_args.resize_h)))
+            poses.append(_pose2d(ev))
 
             # look-down view, captured exactly like the dual-system baseline
             ev.env.step(action_code.LOOKDOWN)
@@ -87,13 +104,9 @@ def run_eval_laya_s2(ev):  # noqa: C901
             ev.env.step(action_code.LOOKUP)
 
             if len(action_seq) == 0 and pixel_goal is None:
-                history_id = (
-                    sorted(np.unique(np.linspace(0, step_id - 1, ev.num_history, dtype=np.int32)).tolist())
-                    if step_id
-                    else []
-                )
-                with timers.s2():
-                    d = agent.decide(instruction, [rgb_list[i] for i in history_id], rgb_list[-1], look_down_image)
+                with timers.s2():  # the agent picks its history frames out of the whole episode
+                    d = agent.decide(instruction, rgb_list[:-1], rgb_list[-1], look_down_image,
+                                     poses=None if None in poses else np.asarray(poses), actions=taken)
                 esc_probs.append(d["escalate_prob"])
                 if d["kind"] == "goal":
                     W, H = look_down_image.size
@@ -105,6 +118,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
                         # same fallback as the baseline when System 1 stops right away
                         pixel_goal = None
                         observations, _, done, _ = ev.env.step(action_code.LEFT)
+                        taken.append(action_code.LEFT)
                         step_id += 1
                         continue
                 else:
@@ -119,6 +133,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
                 forward_action += 1
                 if forward_action > MAX_STEPS or action == action_code.STOP:
                     pixel_goal = None
+                    taken.append(-1)  # no move: re-decide from the next frame
                     step_id += 1
                     forward_action = 0
                     local_actions = []
@@ -132,6 +147,7 @@ def run_eval_laya_s2(ev):  # noqa: C901
                 vis_frames.append(frame)
 
             observations, _, done, _ = ev.env.step(action)
+            taken.append(action)
             step_id += 1
 
         process_bar.update(1)

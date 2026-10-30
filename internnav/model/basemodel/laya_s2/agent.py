@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
-from internnav.dataset.laya_s2_dataset import make_image_transform
+from internnav.dataset.laya_s2_dataset import history_ids, make_image_transform, memory_features
 
 from .laya_nav import LayaNav
 from .laya_s2 import LayaS2, instruction_chunks
@@ -31,30 +31,58 @@ class LayaS2Agent(nn.Module):
         self.device = device
         self.transform = make_image_transform(student.cfg)
         self._out = None
+        self.reset()
+
+    def reset(self):
+        """New episode: drop the cached history-frame features."""
+        self._feat_cache = {}
 
     def _autocast(self):
         return torch.autocast("cuda", dtype=torch.bfloat16, enabled=torch.device(self.device).type == "cuda")
 
+    def _history_feats(self, frames: list) -> torch.Tensor:
+        """encode_frame() of these frames, each computed once per episode (keyed by the image object)."""
+        if len(self._feat_cache) > 4000:  # an episode without reset(): keep the cache bounded
+            self.reset()
+        new = [f for f in frames if self._feat_cache.get(id(f), (None,))[0] is not f]
+        if new:
+            with self._autocast():
+                feats = self.student.encode_frame(torch.stack([self.transform(f) for f in new]).to(self.device))
+            for f, x in zip(new, feats):
+                self._feat_cache[id(f)] = (f, x)
+        return torch.stack([self._feat_cache[id(f)][1] for f in frames])
+
     @torch.no_grad()
-    def decide(self, instruction: str, history: list, cur_image: Image.Image, down_image: Image.Image) -> dict:
+    def decide(self, instruction: str, history: list, cur_image: Image.Image, down_image: Image.Image,
+               poses=None, actions=None) -> dict:
+        """history: the frames before the current one, the whole episode so far (the agent picks the frames it
+        uses, as the dataset does); a list already cut to num_history frames also works for models without
+        hist_recent. poses: robot (x, y, yaw) of each history frame and then of the current one, in any fixed 2D
+        frame with counter-clockwise yaw; actions: the action taken after each history frame (v4 memory; optional)."""
         cfg = self.student.cfg
         S, H = cfg.image_size, cfg.num_history
-        hist = torch.zeros(1, H, 3, S, S)
+        sel = history_ids(len(history), H, cfg.hist_recent)
         hist_mask = torch.zeros(1, H, dtype=torch.bool)
-        for j, img in enumerate(history[:H]):
-            hist[0, j] = self.transform(img)
-            hist_mask[0, j] = True
-        ids = torch.tensor([self.tok(instruction, truncation=True, max_length=cfg.max_text_len)["input_ids"]])
+        hist_mask[0, : len(sel)] = True
         dev = self.device
+        feats = self._history_feats([history[i] for i in sel]) if sel else None
+        mem = {}
+        if cfg.hist_pose or cfg.motion_tokens:
+            hp, ma, md = memory_features(poses, sel, len(history), actions, H, cfg.motion_tokens)
+            mem = dict(hist_pose=torch.from_numpy(hp)[None].to(dev), motion_act=torch.from_numpy(ma)[None].to(dev),
+                       motion_disp=torch.from_numpy(md)[None].to(dev))
+        ids = torch.tensor([self.tok(instruction, truncation=True, max_length=cfg.max_text_len)["input_ids"]])
         with self._autocast():
             self._out = self.student(
                 ids.to(dev),
                 torch.ones_like(ids, dtype=torch.bool).to(dev),
-                hist.to(dev),
+                None if feats is not None else torch.zeros(1, H, 3, S, S, device=dev),
                 hist_mask.to(dev),
                 self.transform(cur_image)[None].to(dev),
                 self.transform(down_image)[None].to(dev),
                 chunks=instruction_chunks(self.student, [instruction]),
+                hist_feats=feats,
+                **mem,
             )
         return self.student.decide(self._out)[0]
 
