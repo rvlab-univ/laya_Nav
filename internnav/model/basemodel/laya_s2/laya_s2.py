@@ -257,6 +257,8 @@ class LayaS2(nn.Module):
         down_pixels: torch.Tensor,  # [B, 3, S, S]
         goal_xy: Optional[torch.Tensor] = None,  # [B, 2] teacher-forced goal for the latent head
         chunks: Optional[List[List[str]]] = None,  # instruction phrases (grounding.split_instruction), if grounding
+        pred_goal_mix: Optional[torch.Tensor] = None,  # [B] bool: rows that may use the model's own goal instead
+        pred_goal_radius: float = 1.5,  # ... but only when it lies within this many patches of goal_xy
     ) -> Dict[str, torch.Tensor]:
         B, H = hist_mask.shape
         dev = input_ids.device
@@ -314,12 +316,24 @@ class LayaS2(nn.Module):
         act_logits = self.act_head(torch.cat([h[:, 0].float(), feats], -1).to(h.dtype)).float()
 
         # goal-conditioned latent for System 1 (teacher-forced in training, own prediction at inference)
+        rows = torch.arange(B, device=dev)
+        own_idx = logits[:, self.n_action :].argmax(-1)
+        own_xy = self.patch_to_goal(own_idx, offsets[rows, own_idx])
+        from_pred = torch.zeros(B, dtype=torch.bool, device=dev)
         if goal_xy is None:
-            patch_idx = logits[:, self.n_action :].argmax(-1)
-            goal_xy = self.patch_to_goal(patch_idx, offsets[torch.arange(B, device=dev), patch_idx])
+            patch_idx, goal_xy = own_idx, own_xy
         else:
             patch_idx, _ = self.goal_to_patch(goal_xy)
-        goal_tok = h_down[torch.arange(B, device=dev), patch_idx] + self.goal_xy_emb(goal_xy).to(h.dtype)
+            if pred_goal_mix is not None:
+                # the planner then trains on goals as the decision model really places them (only near-correct
+                # ones: the path target still leads to the true goal, so a far-off goal would teach it to ignore
+                # the goal)
+                with torch.no_grad():
+                    near = (own_xy - goal_xy).norm(dim=-1) * self.grid <= pred_goal_radius
+                    from_pred = pred_goal_mix.bool() & near
+                goal_xy = torch.where(from_pred[:, None], own_xy.detach(), goal_xy)
+                patch_idx = torch.where(from_pred, own_idx, patch_idx)
+        goal_tok = h_down[rows, patch_idx] + self.goal_xy_emb(goal_xy).to(h.dtype)
         tgt = torch.cat([goal_tok[:, None], self.latent_queries.to(h.dtype).expand(B, -1, -1)], 1)
         lat = self.latent_decoder(tgt, h, memory_key_padding_mask=pad)[:, 1:]
         latent = self.latent_out(lat)
@@ -334,6 +348,7 @@ class LayaS2(nn.Module):
             act_logits=act_logits,
             latent=latent,
             goal_xy=goal_xy,
+            goal_from_pred=from_pred,  # rows whose goal_xy / goal_token come from pred_goal_mix
             goal_token=goal_tok,  # fused hidden state of the chosen goal patch (+ goal position)
             down_feat=vis[n_hist + B :],  # look-down frame features before fusion, reusable by a planner
         )
@@ -398,6 +413,21 @@ class LossWeights:
     correct_radius: float = 1.5  # predicted goal within this many patches counts as correct
 
 
+@torch.no_grad()
+def decision_outcome(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor], correct_radius: float):
+    """Top-1 choice per sample (index into actions + patches) and whether it is correct: the labelled action, or a
+    goal within ``correct_radius`` patches of the labelled one."""
+    logits = out["logits"]
+    A, g = model.n_action, model.grid
+    rows = torch.arange(logits.shape[0], device=logits.device)
+    pred = logits.argmax(-1)
+    pred_patch = (pred - A).clamp(min=0)
+    pred_xy = model.patch_to_goal(pred_patch, out["offsets"][rows, pred_patch])
+    goal_ok = (pred >= A) & ((pred_xy - batch["goal_xy"]).norm(dim=-1) * g <= correct_radius)
+    act_ok = pred == batch["action_idx"]
+    return pred, torch.where(batch["is_goal"].bool(), goal_ok, act_ok)
+
+
 def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor], w: LossWeights):
     logits = out["logits"]
     B, K = logits.shape
@@ -425,7 +455,6 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
 
     zero = logits.new_zeros(())
     rows = torch.arange(B, device=dev)
-    pred = logits.argmax(-1)
     if is_goal.any():
         pred_off = out["offsets"][rows, goal_idx]
         l_off = F.l1_loss(pred_off[is_goal], goal_off[is_goal])
@@ -441,13 +470,12 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
         l_lat, lat_cos = zero, zero
 
     # escalate target: was the model's own top answer wrong?
-    with torch.no_grad():
-        pred_patch = (pred - A).clamp(min=0)
-        pred_xy = model.patch_to_goal(pred_patch, out["offsets"][rows, pred_patch])
-        goal_ok = (pred >= A) & ((pred_xy - batch["goal_xy"]).norm(dim=-1) * g <= w.correct_radius)
-        act_ok = pred == batch["action_idx"]
-        correct = torch.where(is_goal, goal_ok, act_ok)
+    _, correct = decision_outcome(model, out, batch, w.correct_radius)
     l_esc = F.cross_entropy(out["act_logits"], (~correct).long())
+    # STOP and turns apart: action accuracy alone is dominated by whichever is more frequent
+    stop_i = model.cfg.actions.index(0) if 0 in model.cfg.actions else -2
+    is_stop = ~is_goal & (batch["action_idx"] == stop_i)
+    is_turn = ~is_goal & ~is_stop
 
     loss = w.decision * l_dec + w.offset * l_off + w.latent * l_lat + w.escalate * l_esc
     stats = dict(
@@ -459,11 +487,15 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
         acc=correct.float().mean(),
         acc_goal=correct[is_goal].float().mean() if is_goal.any() else zero,
         acc_action=correct[~is_goal].float().mean() if (~is_goal).any() else zero,
+        acc_stop=correct[is_stop].float().mean() if is_stop.any() else zero,
+        acc_turn=correct[is_turn].float().mean() if is_turn.any() else zero,
         latent_cos=lat_cos,
         # sample counts, so that evaluation can weight the subset metrics correctly
         n=logits.new_tensor(float(B)),
         n_goal=is_goal.sum().float(),
         n_action=(~is_goal).sum().float(),
+        n_stop=is_stop.sum().float(),
+        n_turn=is_turn.sum().float(),
         n_lat=lat_mask.sum().float(),
     )
     return loss, stats

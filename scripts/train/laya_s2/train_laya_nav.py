@@ -64,6 +64,18 @@ def parse_args():
     # add-ons, also on a checkpoint trained without them (they start at zero output); see grounding.py
     ap.add_argument("--grounding", type=int, default=0, choices=[0, 1], help="SigLIP2 phrase-match prior")
     ap.add_argument("--goal_xy_order", default="xy", choices=["xy", "yx"])
+    ap.add_argument(
+        "--max_text_len", type=int, default=None, help="instruction tokens kept (default: the checkpoint's, 160)"
+    )
+    ap.add_argument(
+        "--traj_pred_goal",
+        type=float,
+        default=0.0,
+        help="fraction of goal samples whose trajectory head gets the model's own goal (when it is near the true one)",
+    )
+    ap.add_argument(
+        "--traj_pred_goal_radius", type=float, default=None, help="patches; default --w_correct_radius"
+    )
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--max_steps", type=int, default=-1)
     ap.add_argument("--batch_size", type=int, default=32, help="per GPU")
@@ -78,6 +90,7 @@ def parse_args():
     ap.add_argument(
         "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
     )
+    base.add_stop_repeat_args(ap)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -97,9 +110,14 @@ def set_train_mode(model, stage):
                 module.eval()
 
 
-def run(model, batch, weights, tweights, stage):
+def run(model, batch, weights, tweights, stage, pred_goal=0.0, pred_goal_radius=1.5):
+    """pred_goal > 0: that fraction of goal samples may give the trajectory head the model's own goal (training)."""
     m = model.module if isinstance(model, DDP) else model
     traj = dict(traj_pixels=batch["traj_pixels"], traj_mask=batch["traj_mask"])
+    if pred_goal > 0:
+        is_goal = batch["is_goal"].bool()
+        mix = is_goal & (torch.rand(is_goal.shape, device=is_goal.device) < pred_goal)
+        traj.update(pred_goal_mix=mix, pred_goal_radius=pred_goal_radius)
     out, l_match, mstats = base.decision_forward(model, batch, weights if stage == "c2" else _no_match(weights), **traj)
     l_dec, stats = compute_loss(m, out, batch, weights)
     if l_match is not None:
@@ -113,6 +131,8 @@ def run(model, batch, weights, tweights, stage):
         zero = m.traj_queries.sum() * 0
         l_traj, tstats = zero, dict(l_traj=zero.detach(), ade=zero.detach(), fde=zero.detach(), n_traj=zero.detach())
     stats.update(tstats)
+    if pred_goal > 0 and is_goal.any():  # share of goal samples planned from the model's own goal
+        stats["pred_goal_used"] = out["goal_from_pred"][is_goal].float().mean().detach()
     loss = l_traj if stage == "c1" else l_dec + l_traj
     stats["loss"] = loss.detach()
     return loss, stats
@@ -175,12 +195,18 @@ def main():
     cfg = model.cfg
     weights = LossWeights(**{k: getattr(args, f"w_{k}") for k in asdict(LossWeights())})
     tweights = TrajLossWeights(**{k: getattr(args, f"w_{k}") for k in asdict(TrajLossWeights())})
+    pg_radius = args.traj_pred_goal_radius if args.traj_pred_goal_radius is not None else args.w_correct_radius
     tok_dir = os.path.join(args.init_from, "tokenizer") if args.init_from else cfg.text_encoder
     tok = AutoTokenizer.from_pretrained(tok_dir if os.path.isdir(tok_dir) else cfg.text_encoder)
 
     # c1 only learns from pixel-goal samples (the ones with a trajectory)
-    samples = load_vln_samples(args.vln_dataset_use, pixel_goal_only=args.stage == "c1")
-    train_s, val_s = base.split_samples(samples, args.val_ratio, args.val_split, args.max_val_samples)
+    if args.max_text_len:  # saved with the checkpoints, so inference truncates the same way
+        cfg.max_text_len = args.max_text_len
+    samples = load_vln_samples(args.vln_dataset_use, pixel_goal_only=args.stage == "c1", stop_repeat=1)
+    train_s, val_s = base.split_samples(
+        samples, args.val_ratio, args.val_split, args.max_val_samples, train_stop_repeat=args.stop_repeat,
+        val_stop_repeat=args.val_stop_repeat,
+    )
     if main_proc and args.val_split == "scene":
         print(f"val scenes: {sorted({base.scene_of(s) for s in val_s})}")
     kw = dict(goal_xy_order=args.goal_xy_order, with_traj=True, traj_steps=cfg.traj_steps, traj_starts=args.traj_starts)
@@ -243,6 +269,10 @@ def main():
             f"| starting frames per goal sample: {args.traj_starts} | grounding={cfg.grounding} "
             f"match_head={cfg.match_head} (w_match={args.w_match})"
         )
+        print(
+            f"instruction tokens: {cfg.max_text_len} | STOP copies train {args.stop_repeat} / val "
+            f"{args.val_stop_repeat} | own goal for the trajectory head: {args.traj_pred_goal} (radius {pg_radius})"
+        )
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
 
@@ -267,7 +297,7 @@ def main():
         for batch in train_dl:
             batch = base.to_device(batch, device)
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                loss, stats = run(ddp, batch, weights, tweights, args.stage)
+                loss, stats = run(ddp, batch, weights, tweights, args.stage, args.traj_pred_goal, pg_radius)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], args.grad_clip)

@@ -57,8 +57,17 @@ def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, n
     return goals, turns, stops
 
 
+def repeat_stops(samples: List[Dict], k: int) -> List[Dict]:
+    """Each STOP sample k times in place (copies next to each other, as ``load_vln_samples`` lists them)."""
+    assert k >= 1, "stop repeat must be >= 1"
+    return [s for s in samples for _ in range(k if s["kind"] == STOP else 1)]
+
+
 def load_vln_samples(dataset_use: str, sample_step=4, num_future_steps=4, pixel_goal_only=False, stop_repeat=5, seed=0):
-    """Registry names, comma separated; ``name%30`` keeps a fixed random 30% of that dataset's samples."""
+    """Registry names, comma separated; ``name%30`` keeps a fixed random 30% of that dataset's samples.
+
+    The trainers load with ``stop_repeat=1`` and repeat STOP after the train / held-out split (``repeat_stops``), so
+    that validation can count every STOP sample once."""
     from .internvla_n1_lerobot_dataset import data_list, get_annotations_from_lerobot_data
 
     samples = []

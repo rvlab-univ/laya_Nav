@@ -25,6 +25,7 @@ from internnav.dataset.laya_s2_dataset import (
     LayaS2Dataset,
     collate_laya_s2,
     load_vln_samples,
+    repeat_stops,
 )
 from internnav.model.basemodel.laya_s2 import (
     LayaS2,
@@ -48,6 +49,7 @@ def parse_args():
     ap.add_argument("--head_layers", type=int, default=LayaS2Config.head_layers)
     ap.add_argument("--latent_layers", type=int, default=LayaS2Config.latent_layers)
     ap.add_argument("--goal_xy_order", default="xy", choices=["xy", "yx"])
+    ap.add_argument("--max_text_len", type=int, default=LayaS2Config.max_text_len, help="instruction tokens kept")
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--max_steps", type=int, default=-1)
     ap.add_argument("--batch_size", type=int, default=32, help="per GPU")
@@ -71,6 +73,7 @@ def parse_args():
     ap.add_argument(
         "--max_val_samples", type=int, default=5000, help="fixed random subset of the held-out samples; -1 = all"
     )
+    add_stop_repeat_args(ap)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -79,8 +82,22 @@ def parse_args():
     return ap.parse_args()
 
 
+def add_stop_repeat_args(ap):
+    ap.add_argument("--stop_repeat", type=int, default=5, help="copies of each STOP sample in training")
+    ap.add_argument(
+        "--val_stop_repeat",
+        type=int,
+        default=1,
+        help="copies of each STOP sample in validation; 5 reproduces the validation set of runs before this option",
+    )
+
+
 def scene_of(s):
     return s["video"].rstrip("/").split("/")[-3]  # <data_path>/<scene>/videos/chunk-xxx
+
+
+def dataset_of(s):
+    return s["video"].rstrip("/").split("/")[-4]  # traj_data/<dataset>/<scene>/videos/chunk-xxx
 
 
 def is_val(s, ratio, split="scene"):
@@ -89,11 +106,14 @@ def is_val(s, ratio, split="scene"):
     return int(h[:8], 16) / 0xFFFFFFFF < ratio
 
 
-def split_samples(samples, ratio, split="scene", max_val=-1, seed=0):
+def split_samples(samples, ratio, split="scene", max_val=-1, seed=0, train_stop_repeat=1, val_stop_repeat=1):
     """Train / held-out samples; max_val > 0 keeps a fixed random subset of the held-out ones (large datasets hold out
-    thousands of scenes, and every validation pass reads all of them)."""
-    train = [s for s in samples if not is_val(s, ratio, split)]
-    val = [s for s in samples if is_val(s, ratio, split)]
+    thousands of scenes, and every validation pass reads all of them).
+
+    STOP samples are repeated here, after the split, so that validation need not count each one several times
+    (``load_vln_samples(..., stop_repeat=1)`` then 5 / 5 gives the lists of the runs that repeated them before)."""
+    train = repeat_stops([s for s in samples if not is_val(s, ratio, split)], train_stop_repeat)
+    val = repeat_stops([s for s in samples if is_val(s, ratio, split)], val_stop_repeat)
     if 0 < max_val < len(val):
         val = random.Random(seed).sample(val, max_val)
     return train, val
@@ -130,6 +150,8 @@ def decision_forward(model, batch, weights, **extra):
     if "traj_mask" in extra:  # no trajectory for the mismatched copies
         extra = dict(extra, traj_mask=torch.cat([extra["traj_mask"], torch.zeros_like(extra["traj_mask"])]),
                      traj_pixels=torch.cat([extra["traj_pixels"], extra["traj_pixels"]]))
+    if "pred_goal_mix" in extra:  # the mismatched copies keep the true goal
+        extra = dict(extra, pred_goal_mix=torch.cat([extra["pred_goal_mix"], torch.zeros_like(extra["pred_goal_mix"])]))
     out = model(*twice, goal_xy=torch.cat([goal_xy, goal_xy]),
                 chunks=instruction_chunks(m, list(ins) + [ins[j] for j in idx.tolist()]), **extra)
     pos = {k: (v if k in PER_PAIR else v[:B]) for k, v in out.items()}
@@ -147,7 +169,15 @@ def run(model, batch, weights):
 
 
 # each metric is averaged over the samples it is defined on
-METRIC_WEIGHT = dict(acc_goal="n_goal", l_off="n_goal", acc_action="n_action", l_lat="n_lat", latent_cos="n_lat")
+METRIC_WEIGHT = dict(
+    acc_goal="n_goal",
+    l_off="n_goal",
+    acc_action="n_action",
+    acc_stop="n_stop",
+    acc_turn="n_turn",
+    l_lat="n_lat",
+    latent_cos="n_lat",
+)
 
 
 @torch.no_grad()
@@ -200,14 +230,18 @@ def main():
         image_std=list(ip.image_std),
         head_layers=args.head_layers,
         latent_layers=args.latent_layers,
+        max_text_len=args.max_text_len,
         grounding=bool(args.grounding),
         match_head=args.w_match > 0,
     )
     weights = LossWeights(**{k: getattr(args, f"w_{k}") for k in asdict(LossWeights())})
     tok = AutoTokenizer.from_pretrained(args.text_encoder)
 
-    samples = load_vln_samples(args.vln_dataset_use)
-    train_s, val_s = split_samples(samples, args.val_ratio, args.val_split, args.max_val_samples)
+    samples = load_vln_samples(args.vln_dataset_use, stop_repeat=1)
+    train_s, val_s = split_samples(
+        samples, args.val_ratio, args.val_split, args.max_val_samples, train_stop_repeat=args.stop_repeat,
+        val_stop_repeat=args.val_stop_repeat,
+    )
     if main_proc and args.val_split == "scene":
         print(f"val scenes ({args.val_split} split): {sorted({scene_of(s) for s in val_s})}")
     train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, goal_xy_order=args.goal_xy_order)
