@@ -8,6 +8,8 @@
 | v2 | System 1: 경로 헤드 보강(프레임 융합, 목표 표시, 출발 지점 4개) + 큰 데이터셋 | 학습 완료. 정답 목표 경로 오차 0.09 m. 병목은 System 2 목표 선택(정확도 0.45), 판단 과적합 | `laya_nav_mix_c1`, `laya_nav_mix_c2` | [v2_path_head.md](v2_path_head.md) |
 | v3 | System 2: 지시문–화면 연결(SigLIP2 근거 지도, 지시문 짝 맞추기) | 학습 완료. 물체 이름에 반응하기 시작(KIMM TVD 0.017 → 0.041, 근거 지도 효과). 목표 정확도는 그대로(0.45) | `laya_nav_v3_c2` | [v3_grounding.md](v3_grounding.md) |
 
+아직 구현하지 않은 후보는 [next_candidates.md](next_candidates.md)에 모은다. 하나를 고르면 버전 문서로 옮긴다.
+
 ## 이름 규칙
 
 | 대상 | 규칙 | 예 |
