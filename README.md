@@ -1,5 +1,7 @@
 # LayaNav: Vision-and-Language Navigation with One Small Model
 
+English | [한국어](README_ko.md)
+
 LayaNav replaces the two systems of a dual-system VLN agent — a 7B vision-language model that decides where to
 go (System 2) and a diffusion policy that turns the decision into a path (System 1) — with **a single 445M-parameter
 model**. The decision is made by a non-autoregressive, Laya-style decision model that scores every option in one
