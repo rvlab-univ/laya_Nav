@@ -76,6 +76,7 @@ def parse_args():
     )
     add_stop_repeat_args(ap)
     add_memory_args(ap, keep_checkpoint=False)
+    add_shortcut_args(ap)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -107,6 +108,19 @@ def add_memory_args(ap, keep_checkpoint):
     ap.add_argument("--motion_tokens", type=int, default=d(c.motion_tokens), help="last steps as tokens (v4: 8)")
     ap.add_argument("--hist_grad", type=int, default=d(int(c.hist_grad)), choices=[0, 1],
                     help="0: history frames encoded without gradients (v4)")
+
+
+def add_shortcut_args(ap):
+    """v5, against copying the previous action (training samples only; the loss weight is --w_change)."""
+    ap.add_argument("--mirror", type=float, default=0.0,
+                    help="share of samples mirrored left-right with left / right swapped in the instruction (v5: 0.5)")
+    ap.add_argument("--memory_dropout", type=float, default=0.0,
+                    help="share of samples whose pose / motion inputs are zeroed (v5: 0.5)")
+
+
+def shortcut_note(args):
+    return (f"against copying the previous action: memory dropout {args.memory_dropout} | change-point weight "
+            f"{args.w_change} | mirror {args.mirror}")
 
 
 def memory_overrides(args):
@@ -204,6 +218,8 @@ METRIC_WEIGHT = dict(
     acc_action="n_action",
     acc_stop="n_stop",
     acc_turn="n_turn",
+    acc_change="n_change",
+    acc_keep="n_keep",
     l_lat="n_lat",
     latent_cos="n_lat",
 )
@@ -274,7 +290,8 @@ def main():
     )
     if main_proc and args.val_split == "scene":
         print(f"val scenes ({args.val_split} split): {sorted({scene_of(s) for s in val_s})}")
-    train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, goal_xy_order=args.goal_xy_order)
+    train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, goal_xy_order=args.goal_xy_order,
+                             mirror=args.mirror, memory_dropout=args.memory_dropout)
     val_ds = LayaS2Dataset(val_s, tok, cfg, args.teacher_latents, augment=False, goal_xy_order=args.goal_xy_order)
     collate = partial(collate_laya_s2, pad_id=tok.pad_token_id)
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
@@ -320,6 +337,7 @@ def main():
     if main_proc:
         n_par = sum(p.numel() for p in model.parameters())
         print(f"params: {n_par / 1e6:.1f}M | train {len(train_ds)} val {len(val_ds)} | steps {total}")
+        print(shortcut_note(args))
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
 

@@ -475,6 +475,7 @@ class LossWeights:
     match: float = 0.0  # instruction / view matching against shuffled instructions (needs match_head)
     goal_sigma: float = 0.75  # soft target over neighbouring patches, in patch units
     correct_radius: float = 1.5  # predicted goal within this many patches counts as correct
+    change: float = 1.0  # v5: decision-loss weight of change points (batch["change"] == 1, see change_flag)
 
 
 @torch.no_grad()
@@ -515,7 +516,13 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
     q = logp.exp()
     log_score = -(target * logp).sum(-1)
     spherical = -(target * q).sum(-1) / q.norm(dim=-1).clamp_min(1e-9) / target.norm(dim=-1).clamp_min(1e-9)
-    l_dec = (log_score + w.spherical * spherical).mean()
+    per_sample = log_score + w.spherical * spherical
+    has_change = "change" in batch
+    if has_change and w.change != 1.0:  # change points: the previous action does not give the answer away
+        wt = torch.where(batch["change"] == 1, w.change, 1.0).to(per_sample.dtype)
+        l_dec = (per_sample * wt).sum() / wt.sum()
+    else:
+        l_dec = per_sample.mean()
 
     zero = logits.new_zeros(())
     rows = torch.arange(B, device=dev)
@@ -562,4 +569,8 @@ def compute_loss(model: LayaS2, out: Dict[str, torch.Tensor], batch: Dict[str, t
         n_turn=is_turn.sum().float(),
         n_lat=lat_mask.sum().float(),
     )
+    if has_change:  # accuracy where the previous action tells the answer (keep) and where it does not (change)
+        for k, m in (("change", batch["change"] == 1), ("keep", batch["change"] == 0)):
+            stats[f"acc_{k}"] = correct[m].float().mean() if m.any() else zero
+            stats[f"n_{k}"] = m.sum().float()
     return loss, stats

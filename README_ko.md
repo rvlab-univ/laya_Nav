@@ -32,7 +32,8 @@ LayaNav는 듀얼 시스템 VLN 에이전트의 두 시스템을 **445M 파라�
 | v1 | Laya-S2 판단 + 경로 헤드를 한 모델로 | 첫 경로 헤드가 약함 | [구현 보고서](docs/laya_nav/IMPLEMENTATION_REPORT.md) |
 | v2 | 경로 헤드: 프레임 융합, 목표 표시, 샘플당 출발 지점 4개. R2R + RxR + ScaleVLN | 정답 목표 기준 경로 오차 0.09 m (평균 궤적 기준선 0.52 m) | [v2_path_head.md](docs/laya_nav/model_improvement/v2_path_head.md) |
 | v3 | 지시문 근거 연결: 고정 SigLIP2의 구절–칸 일치 지도를 판단 토큰에 더함. 지시문–화면 짝 맞추기 손실 | 처음 보는 장면 목표 정확도 43.2% (v2: 41.7%). 지시한 물체에 대한 반응 2.4배 (Isaac Sim) | [v3_grounding.md](docs/laya_nav/model_improvement/v3_grounding.md) |
-| v4 | 기억: 과거 프레임 32장(최근 16 + 이전 16)과 각 프레임의 위치, 최근 8 step의 명령과 실제 이동량 토큰 | 학습 중 | [v4_memory.md](docs/laya_nav/model_improvement/v4_memory.md) |
+| v4 | 기억: 과거 프레임 32장(최근 16 + 이전 16)과 각 프레임의 위치, 최근 8 step의 명령과 실제 이동량 토큰 | 처음 보는 장면 목표 정확도 46.6% (v3: 43.2%). Isaac Sim에서는 직전 회전을 베껴 계속 돎 | [v4_memory.md](docs/laya_nav/model_improvement/v4_memory.md) |
+| v5 | 학습: 직전 행동 베끼기 막기. 샘플 절반에서 기억 입력 지우기, 전환 시점 손실 3배, 좌우 반전 샘플. 진단에 지름길 지표 추가 | 학습 전 | [v5_copycat.md](docs/laya_nav/model_improvement/v5_copycat.md) |
 
 ![LayaNav v4](docs/laya_nav/model_improvement/figures/v4_memory.png)
 
@@ -68,21 +69,23 @@ python -m pytest -q tests/laya_s2
 # v2 과정: 경로 헤드만(C1) → 전체(C2), 단계마다 진단 포함
 bash scripts/train/laya_s2/train_laya_nav.sh
 
-# v3 체크포인트에서 v4 학습
+# v3 체크포인트에서 v5 학습 (v4는 마지막 옵션 줄만 뺀 것)
 torchrun --nproc_per_node=1 scripts/train/laya_s2/train_laya_nav.py --stage c2 \
     --init_from checkpoints/laya_nav_v3_c2/step_48000 \
     --vln_dataset_use r2r_125cm_0_30,rxr_125cm_0_30,scalevln_125cm_0_30 \
     --grounding 1 --w_match 0.2 --lr_text 1e-5 --max_text_len 256 \
     --num_history 32 --hist_recent 16 --hist_pose 1 --motion_tokens 8 --hist_grad 0 \
-    --epochs 1 --batch_size 32 --output_dir checkpoints/laya_nav_v4_c2
+    --mirror 0.5 --memory_dropout 0.5 --w_change 3 \
+    --epochs 1 --batch_size 32 --output_dir checkpoints/laya_nav_v5_c2
 ```
 
-GPU 1장(H200) 기준으로 v3는 1 epoch(205만 샘플)에 13.7시간이 걸렸다.
+GPU 1장(H200) 기준 1 epoch(205만 샘플)에 v3는 13.7시간, v4는 20.5시간이 걸렸다.
 
 ## 평가
 
 ```bash
-# 오프라인: 판단 정확도, STOP 혼동표, 확률 보정, 지시문 잘림 (체크포인트 여러 개를 한 번에)
+# 오프라인: 판단 정확도, STOP 혼동표, 확률 보정, 지시문 잘림, 지름길 지표(기억 끄기, 지시문 좌우 바꾸기, 좌우 반전.
+# --checks none이면 생략). 체크포인트 여러 개를 한 번에
 python scripts/train/laya_s2/diagnose_decision.py --vln_dataset_use r2r_125cm_0_30,rxr_125cm_0_30,scalevln_125cm_0_30 \
     --ckpts <ckpt> [<ckpt> ...] --out_dir logs/diagnosis/decision_val
 

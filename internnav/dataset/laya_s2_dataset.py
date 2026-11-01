@@ -8,6 +8,7 @@ Samples are enumerated exactly like ``NavPixelGoalDataset`` (pixel-goal / turn /
 import hashlib
 import os
 import random
+import re
 from typing import Dict, List, Optional, Sequence
 
 import numpy as np
@@ -186,6 +187,62 @@ def memory_features(xyyaw, ids: List[int], cur: int, actions, n_hist: int, n_mot
     return hist_pose, motion_act, motion_disp
 
 
+# ---------------------------------------------------------------------- v5: against copying the previous action
+# change_flag values
+CHANGE, KEEP, NO_PREV = 1, 0, -1
+MIRROR_ACTION = {2: 3, 3: 2}  # habitat LEFT <-> RIGHT
+
+
+def change_flag(s: Dict) -> int:
+    """Is the label different from the action taken just before this sample? 1 (change point: the previous action
+    does not give the answer away, e.g. a goal after turning), 0 (same as before: still turning the same way, or a
+    goal while walking forward), -1 (no previous action, or a STOP sample: STOP is repeated in training already)."""
+    acts, start = s.get("acts"), s["start"]
+    if s["kind"] == STOP or acts is None or start <= 0 or start > len(acts):
+        return NO_PREV
+    prev = int(acts[start - 1])
+    if s["kind"] == GOAL:
+        return {1: KEEP, 2: CHANGE, 3: CHANGE}.get(prev, NO_PREV)
+    if prev not in (1, 2, 3):
+        return NO_PREV
+    return KEEP if prev == s["action"] else CHANGE
+
+
+_SWAP_WORD = re.compile(r"\b(counter-?clockwise|anti-?clockwise|clockwise|left|right)(?=(?:most|hand|wards?)?\b)",
+                        re.IGNORECASE)
+# "right" / "left" that are no direction: such instructions are not mirrored (rather than swapped wrongly)
+_NOT_DIRECTION = re.compile(
+    r"\ball right\b|\bright\s+(?:in front|next|there|here|away|now|behind|beside|below|above|under|inside|outside)\b"
+    r"|\b(?:you|you've|have|has|had|just|we|we've|i)\s+left\b|\bleft\s+(?:over|behind)\b",
+    re.IGNORECASE,
+)
+_NOT_ENGLISH = re.compile(r"[^\x00-\x7f\u2018\u2019\u201c\u201d]")  # e.g. the RxR Hindi / Telugu instructions
+
+
+def _swapped(m) -> str:
+    w = m.group(0)
+    low = w.lower()
+    t = {"left": "right", "right": "left", "clockwise": "counterclockwise"}.get(low, "clockwise")
+    return t.upper() if w.isupper() and len(w) > 1 else (t.capitalize() if w[0].isupper() else t)
+
+
+def mirror_instruction(text: str) -> Optional[str]:
+    """The instruction for the left-right mirrored scene (left <-> right, clockwise <-> counterclockwise), or None
+    when it cannot be mirrored safely (not English, or "right" / "left" used as no direction)."""
+    if _NOT_ENGLISH.search(text) or _NOT_DIRECTION.search(text):
+        return None
+    return _SWAP_WORD.sub(_swapped, text)
+
+
+def mirror_poses(xyyaw):
+    """Robot poses (x forward, y left, counter-clockwise yaw) of the mirrored episode: y and yaw change sign."""
+    if xyyaw is None:
+        return None
+    p = np.array(xyyaw, dtype=np.float64, copy=True)
+    p[:, 1:3] *= -1
+    return p
+
+
 def make_image_transform(cfg, augment: bool = False):
     s = cfg.image_size
     ops = [v2.ToImage(), v2.Resize((s, s), antialias=True)]
@@ -225,6 +282,9 @@ class LayaS2Dataset(Dataset):
         with_traj: bool = False,  # LayaNav: add (current look-down frame, remaining path) pairs to goal samples
         traj_steps: int = 32,
         traj_starts: int = 1,  # starting frames per goal sample (the DualVLN System 1 trains on all of them, <= 12)
+        mirror: float = 0.0,  # v5: share of samples mirrored left-right (images, labels, poses, instruction words)
+        memory_dropout: float = 0.0,  # v5: share of samples whose pose / motion inputs are zeroed (1 = always)
+        swap_directions: float = 0.0,  # diagnosis only: swap left / right in the instruction, images unchanged
     ):
         self.actions = list(cfg.actions)
         self.samples = [s for s in samples if s["kind"] == GOAL or s["action"] in self.actions]
@@ -239,6 +299,9 @@ class LayaS2Dataset(Dataset):
         self.with_traj = with_traj
         self.traj_steps = traj_steps
         self.traj_starts = traj_starts
+        self.mirror = mirror
+        self.memory_dropout = memory_dropout
+        self.swap_directions = swap_directions
 
     def __len__(self):
         return len(self.samples)
@@ -249,6 +312,12 @@ class LayaS2Dataset(Dataset):
     def __getitem__(self, i):
         s = self.samples[i]
         start = s["start"]
+        instruction, flip = s["instruction"], False
+        if self.mirror > 0 and random.random() < self.mirror:
+            m = mirror_instruction(instruction)
+            instruction, flip = (m, True) if m is not None else (instruction, False)
+        elif self.swap_directions > 0 and random.random() < self.swap_directions:
+            instruction = mirror_instruction(instruction) or instruction
         hist_ids = history_ids(start, self.cfg.num_history, getattr(self.cfg, "hist_recent", 0))
 
         S = self.cfg.image_size
@@ -260,9 +329,9 @@ class LayaS2Dataset(Dataset):
 
         down_raw = Image.open(frame_path(s, start, look_down=True)).convert("RGB")
         item = dict(
-            instruction=s["instruction"],  # raw text, for the grounding prior and the matching loss
+            instruction=instruction,  # raw text, for the grounding prior and the matching loss
             input_ids=torch.tensor(
-                self.tok(s["instruction"], truncation=True, max_length=self.cfg.max_text_len)["input_ids"]
+                self.tok(instruction, truncation=True, max_length=self.cfg.max_text_len)["input_ids"]
             ),
             hist_pixels=hist,
             hist_mask=hist_mask,
@@ -273,24 +342,33 @@ class LayaS2Dataset(Dataset):
             goal_xy=torch.zeros(2),
             latent=torch.zeros(self.cfg.n_query, self.cfg.latent_dim),
             latent_mask=False,
+            change=change_flag(s),
         )
         if getattr(self.cfg, "hist_pose", False) or getattr(self.cfg, "motion_tokens", 0):
             xyyaw = robot_poses(s["poses"], s["pitch_2"]) if s.get("poses") is not None else None
-            hp, ma, md = memory_features(xyyaw, hist_ids, start, s.get("acts"), self.cfg.num_history,
+            acts = s.get("acts")
+            if flip:
+                xyyaw = mirror_poses(xyyaw)
+                acts = None if acts is None else [MIRROR_ACTION.get(int(a), int(a)) for a in acts]
+            hp, ma, md = memory_features(xyyaw, hist_ids, start, acts, self.cfg.num_history,
                                          getattr(self.cfg, "motion_tokens", 0))
+            if self.memory_dropout > 0 and random.random() < self.memory_dropout:
+                hp, ma, md = np.zeros_like(hp), np.zeros_like(ma), np.zeros_like(md)
             item.update(hist_pose=torch.from_numpy(hp), motion_act=torch.from_numpy(ma), motion_disp=torch.from_numpy(md))
         if s["kind"] == GOAL:
             a, b = s["goal"]
             x, y = (a, b) if self.goal_xy_order == "xy" else (b, a)
             W, H = down_raw.size
             item["goal_xy"] = torch.tensor([x / W, y / H], dtype=torch.float32).clamp(0, 1)
-            if self.store is not None:
+            if flip:
+                item["goal_xy"][0] = 1 - item["goal_xy"][0]
+            if self.store is not None and not flip:  # teacher latents were extracted from the unmirrored sample
                 lat = self.store.get(sample_key(*(s[k] for k in KEY_FIELDS)))
                 if lat is not None:
                     item["latent"] = torch.from_numpy(lat)
                     item["latent_mask"] = True
         else:
-            item["action_idx"] = self.actions.index(s["action"])
+            item["action_idx"] = self.actions.index(MIRROR_ACTION.get(s["action"], s["action"]) if flip else s["action"])
         if self.with_traj:
             K = self.traj_starts
             item.update(
@@ -302,6 +380,12 @@ class LayaS2Dataset(Dataset):
                 item["traj_pixels"][j] = self._img(frame_path(s, start + cid, look_down=True))
                 item["traj"][j] = torch.from_numpy(trajectory_target(s, cid, self.traj_steps))
                 item["traj_mask"][j] = True
+            if flip:  # (dx, dy, yaw): sideways and heading change sign
+                item["traj_pixels"] = item["traj_pixels"].flip(-1)
+                item["traj"][..., 1:] *= -1
+        if flip:
+            for k in ("hist_pixels", "cur_pixels", "down_pixels"):
+                item[k] = item[k].flip(-1)
         return item
 
     @staticmethod
@@ -334,8 +418,9 @@ def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tenso
     out = dict(input_ids=input_ids, text_mask=text_mask, instructions=[b["instruction"] for b in batch])
     for k in ("hist_pixels", "hist_mask", "cur_pixels", "down_pixels", "goal_xy", "latent"):
         out[k] = torch.stack([b[k] for b in batch])
-    for k in ("is_goal", "latent_mask", "action_idx"):
-        out[k] = torch.tensor([b[k] for b in batch])
+    for k in ("is_goal", "latent_mask", "action_idx", "change"):
+        if k in batch[0]:
+            out[k] = torch.tensor([b[k] for b in batch])
     if "traj" in batch[0]:  # [B, K, ...]
         for k in ("traj_pixels", "traj", "traj_mask"):
             out[k] = torch.stack([b[k] for b in batch])

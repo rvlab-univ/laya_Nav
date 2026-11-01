@@ -35,7 +35,8 @@ Each improvement has its own document (diagnosis → change → cost → trainin
 | v1 | Laya-S2 decision + trajectory head as one model | first trajectory head too weak | [report](docs/laya_nav/IMPLEMENTATION_REPORT.md) |
 | v2 | trajectory head: frame fusion, goal marking, 4 start frames per sample; R2R + RxR + ScaleVLN | path error 0.09 m with the true goal (mean-trajectory baseline 0.52 m) | [v2_path_head.md](docs/laya_nav/model_improvement/v2_path_head.md) |
 | v3 | instruction grounding: frozen SigLIP2 phrase-to-patch maps added to the decision tokens; instruction / view matching loss | held-out goal accuracy 43.2% (v2: 41.7%); sensitivity to the named object 2.4× (Isaac Sim) | [v3_grounding.md](docs/laya_nav/model_improvement/v3_grounding.md) |
-| v4 | memory: 32 history frames (latest 16 + older 16) with their poses, tokens for the last 8 steps (command and measured move) | training | [v4_memory.md](docs/laya_nav/model_improvement/v4_memory.md) |
+| v4 | memory: 32 history frames (latest 16 + older 16) with their poses, tokens for the last 8 steps (command and measured move) | held-out goal accuracy 46.6% (v3: 43.2%); in Isaac Sim it copies its previous turn and keeps turning | [v4_memory.md](docs/laya_nav/model_improvement/v4_memory.md) |
+| v5 | training against copying the previous action: memory inputs dropped for half of the samples, change points weighted 3×, left-right mirrored samples; shortcut checks in the diagnosis | not trained yet | [v5_copycat.md](docs/laya_nav/model_improvement/v5_copycat.md) |
 
 ![LayaNav v4](docs/laya_nav/model_improvement/figures/v4_memory.png)
 
@@ -73,21 +74,23 @@ at a time; rerun the same command after an interruption.
 # v2 pipeline: trajectory head only (C1), then everything (C2), with a diagnosis after each stage
 bash scripts/train/laya_s2/train_laya_nav.sh
 
-# v4 from a v3 checkpoint
+# v5 from a v3 checkpoint (v4 = the same without the last line of options)
 torchrun --nproc_per_node=1 scripts/train/laya_s2/train_laya_nav.py --stage c2 \
     --init_from checkpoints/laya_nav_v3_c2/step_48000 \
     --vln_dataset_use r2r_125cm_0_30,rxr_125cm_0_30,scalevln_125cm_0_30 \
     --grounding 1 --w_match 0.2 --lr_text 1e-5 --max_text_len 256 \
     --num_history 32 --hist_recent 16 --hist_pose 1 --motion_tokens 8 --hist_grad 0 \
-    --epochs 1 --batch_size 32 --output_dir checkpoints/laya_nav_v4_c2
+    --mirror 0.5 --memory_dropout 0.5 --w_change 3 \
+    --epochs 1 --batch_size 32 --output_dir checkpoints/laya_nav_v5_c2
 ```
 
-Single GPU (H200): v3 took 13.7 h for one epoch (2.05M samples).
+Single GPU (H200), one epoch (2.05M samples): v3 13.7 h, v4 20.5 h.
 
 ## Evaluation
 
 ```bash
-# offline: decision accuracy, STOP confusion, calibration, instruction truncation (several checkpoints at once)
+# offline: decision accuracy, STOP confusion, calibration, instruction truncation, shortcut checks (memory off,
+# left / right swapped in the instruction, mirrored samples; --checks none to skip), several checkpoints at once
 python scripts/train/laya_s2/diagnose_decision.py --vln_dataset_use r2r_125cm_0_30,rxr_125cm_0_30,scalevln_125cm_0_30 \
     --ckpts <ckpt> [<ckpt> ...] --out_dir logs/diagnosis/decision_val
 

@@ -6,7 +6,11 @@ For one or more checkpoints, on the same held-out samples (each STOP sample coun
   - STOP: confusion of labels and choices, precision / recall, how often STOP is chosen vs labelled,
   - calibration: expected calibration error (ECE) of the top-1 probability, and how well the escalate head flags
     wrong decisions (AUROC),
-  - the validation accuracy of the old runs, which counted every STOP sample 5 times (``acc_action legacy``).
+  - the validation accuracy of the old runs, which counted every STOP sample 5 times (``acc_action legacy``),
+  - shortcut checks (v5): accuracy where the previous action gives the answer away (keep) and where it does not
+    (change); the same with the pose / motion inputs zeroed (memory_off, models with v4 memory); how often the
+    decision changes when only left / right are swapped in the instruction (swap_directions); accuracy on the
+    left-right mirrored samples and agreement with the mirrored decision (mirror).
 Without the model: label counts per dataset and how many instructions the tokenizer cuts at each length.
 
     python scripts/train/laya_s2/diagnose_decision.py \
@@ -33,7 +37,19 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from internnav.dataset.laya_s2_dataset import GOAL, STOP, TURN, LayaS2Dataset, collate_laya_s2, load_vln_samples
+from internnav.dataset.laya_s2_dataset import (
+    CHANGE,
+    GOAL,
+    KEEP,
+    MIRROR_ACTION,
+    STOP,
+    TURN,
+    LayaS2Dataset,
+    change_flag,
+    collate_laya_s2,
+    load_vln_samples,
+    mirror_instruction,
+)
 from internnav.model.basemodel.laya_s2 import LayaNav, LayaS2, LossWeights, decision_outcome
 from internnav.model.basemodel.laya_s2.laya_nav import _is_nav
 from internnav.model.basemodel.laya_s2.laya_s2 import CONFIG_NAME
@@ -55,8 +71,11 @@ def label_stats(samples, stop_repeat=5):
         sub = [s for s in samples if name == "all" or base.dataset_of(s) == name]
         n = {k: sum(s["kind"] == c for s in sub) for c, k in KIND.items()}
         stream = n["goal"] + n["turn"] + stop_repeat * n["stop"]
+        flags = [change_flag(s) for s in sub]
         out[name] = dict(
             unique=n,
+            change=sum(f == CHANGE for f in flags),
+            keep=sum(f == KEEP for f in flags),
             stop_unique=n["stop"] / max(sum(n.values()), 1),
             stop_in_training=stop_repeat * n["stop"] / max(stream, 1),
         )
@@ -96,14 +115,16 @@ def load_model(ckpt):
 
 
 @torch.no_grad()
-def profile(model, samples, tok, batch_size=64, num_workers=8, device=torch.device("cpu"), correct_radius=1.5):
-    """Per-sample top-1 choice, correctness, its probability and the escalate probability (in ``ds.samples`` order)."""
-    ds = LayaS2Dataset(samples, tok, model.cfg, augment=False)
+def profile(model, samples, tok, batch_size=64, num_workers=8, device=torch.device("cpu"), correct_radius=1.5,
+            ds_kw=None):
+    """Per-sample top-1 choice, correctness, its probability and the escalate probability (in ``ds.samples`` order).
+    ``ds_kw``: dataset options of the shortcut checks (memory_dropout / swap_directions / mirror = 1.0)."""
+    ds = LayaS2Dataset(samples, tok, model.cfg, augment=False, **(ds_kw or {}))
     dl = DataLoader(ds, batch_size, shuffle=False, num_workers=num_workers,
                     collate_fn=partial(collate_laya_s2, pad_id=tok.pad_token_id))
     model = model.eval().to(device)
     amp = torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext()
-    rec = {k: [] for k in ("pred", "correct", "conf", "esc")}
+    rec = {k: [] for k in ("pred", "correct", "conf", "esc", "top")}
     A = model.n_action
     for batch in dl:
         batch = base.to_device(batch, device)
@@ -115,7 +136,86 @@ def profile(model, samples, tok, batch_size=64, num_workers=8, device=torch.devi
         rec["correct"] += ok.tolist()
         rec["conf"] += p.max(-1).values.tolist()
         rec["esc"] += torch.softmax(out["act_logits"].float(), -1)[:, 1].tolist()
+        rec["top"] += pred.tolist()  # index into actions + patches
     return ds.samples, {k: np.asarray(v) for k, v in rec.items()}
+
+
+CHECKS = ("memory_off", "swap_directions", "mirror")
+
+
+def run_checks(model, samples, tok, checks, **kw):
+    """Shortcut checks on ``samples`` (the ones ``profile`` kept): {check: records + "idx" (the samples it ran on)}."""
+    out = {}
+    cfg = model.cfg
+    plan = {}
+    if "memory_off" in checks and (getattr(cfg, "hist_pose", False) or getattr(cfg, "motion_tokens", 0)):
+        plan["memory_off"] = (list(range(len(samples))), dict(memory_dropout=1.0))
+    if "swap_directions" in checks:  # instructions with a direction word
+        idx = [i for i, s in enumerate(samples) if mirror_instruction(s["instruction"]) not in (None, s["instruction"])]
+        plan["swap_directions"] = (idx, dict(swap_directions=1.0))
+    if "mirror" in checks:
+        idx = [i for i, s in enumerate(samples) if mirror_instruction(s["instruction"]) is not None]
+        plan["mirror"] = (idx, dict(mirror=1.0))
+    for name, (idx, ds_kw) in plan.items():
+        if not idx:
+            continue
+        _, rec = profile(model, [samples[i] for i in idx], tok, ds_kw=ds_kw, **kw)
+        out[name] = dict(rec, idx=np.asarray(idx), actions=list(cfg.actions), grid=int(model.grid))
+    return out
+
+
+def mirrored_top(top, actions, grid):
+    """The choice of the mirrored sample that matches ``top`` (index into actions + patches)."""
+    A = len(actions)
+    if top < A:
+        m = MIRROR_ACTION.get(actions[top], actions[top])
+        return actions.index(m) if m in actions else top
+    r, c = divmod(top - A, grid)
+    return A + r * grid + (grid - 1 - c)
+
+
+def _same_choice(a, b, A, grid, radius):
+    if a < A or b < A:
+        return a == b
+    (ra, ca), (rb, cb) = divmod(a - A, grid), divmod(b - A, grid)
+    return float(np.hypot(ra - rb, ca - cb)) <= radius
+
+
+def summarize_checks(samples, runs, checks, radius=1.5):
+    """``runs``: {checkpoint: profile() records}; ``checks``: {checkpoint: run_checks() output}."""
+    flag = np.array([change_flag(s) for s in samples])
+    res = {}
+
+    def split(ok, f):
+        return dict(acc=float(ok.mean()) if len(ok) else None,
+                    change=float(ok[f == CHANGE].mean()) if (f == CHANGE).any() else None,
+                    keep=float(ok[f == KEEP].mean()) if (f == KEEP).any() else None)
+
+    for name, full in runs.items():
+        ok = full["correct"].astype(bool)
+        row = dict(full=split(ok, flag), n_change=int((flag == CHANGE).sum()), n_keep=int((flag == KEEP).sum()))
+        c = checks.get(name, {})
+        if "memory_off" in c:
+            row["memory_off"] = split(c["memory_off"]["correct"].astype(bool), flag[c["memory_off"]["idx"]])
+        if "swap_directions" in c:
+            r = c["swap_directions"]
+            fp, sp = full["pred"][r["idx"]], r["pred"]
+            turn = np.isin(fp, [2, 3])
+            row["swap_directions"] = dict(
+                n=len(r["idx"]),
+                changed=float((full["top"][r["idx"]] != r["top"]).mean()),
+                n_turn=int(turn.sum()),
+                turn_flipped=float((sp[turn] == 5 - fp[turn]).mean()) if turn.any() else None,  # LEFT 2 <-> RIGHT 3
+            )
+        if "mirror" in c:
+            r = c["mirror"]
+            A, g = len(r["actions"]), r["grid"]
+            want = [mirrored_top(t, r["actions"], g) for t in full["top"][r["idx"]]]
+            agree = np.array([_same_choice(a, b, A, g, radius) for a, b in zip(want, r["top"])])
+            row["mirror"] = dict(n=len(r["idx"]), acc_unmirrored=float(ok[r["idx"]].mean()),
+                                 acc_mirrored=float(r["correct"].astype(bool).mean()), agreement=float(agree.mean()))
+        res[name] = row
+    return res
 
 
 # ---------------------------------------------------------------------- summary
@@ -219,15 +319,15 @@ def _table(head, rows):
     return "\n".join(out + ["| " + " | ".join(str(c) for c in r) + " |" for r in rows])
 
 
-def write_report(out_dir, labels, trunc, summary, samples=None, runs=None, cfg_len=None, note=""):
+def write_report(out_dir, labels, trunc, summary, samples=None, runs=None, cfg_len=None, note="", shortcuts=None):
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "diagnosis.json"), "w") as f:
-        json.dump(dict(labels=labels, truncation=trunc, model=summary), f, indent=1)
+        json.dump(dict(labels=labels, truncation=trunc, model=summary, shortcuts=shortcuts), f, indent=1)
     md = ["# Decision diagnosis", "", note, ""]
     md += ["## Labels (unique samples)", "", _table(
-        ["dataset", "goal", "turn", "stop", "STOP share", "STOP share in training (repeated)"],
+        ["dataset", "goal", "turn", "stop", "STOP share", "STOP share in training (repeated)", "change", "keep"],
         [[g, v["unique"]["goal"], v["unique"]["turn"], v["unique"]["stop"], _pct(v["stop_unique"]),
-          _pct(v["stop_in_training"])] for g, v in labels.items()])]
+          _pct(v["stop_in_training"]), v.get("change", "–"), v.get("keep", "–")] for g, v in labels.items()])]
     if trunc:
         lens = sorted({L for v in trunc.values() for L in v["cut"]})
         md += ["", f"## Instruction length (tokens; the model keeps {cfg_len})", "", _table(
@@ -258,23 +358,49 @@ def write_report(out_dir, labels, trunc, summary, samples=None, runs=None, cfg_l
             ["dataset/kind", "n", "always right", "always wrong", "mixed"],
             [[k, v["n"], _pct(v["always_right"]), _pct(v["always_wrong"]), _pct(v["mixed"])]
              for k, v in summary["consistency"].items()])]
+    if shortcuts:
+        md += _shortcut_report(shortcuts)
     with open(os.path.join(out_dir, "report.md"), "w") as f:
         f.write("\n".join(md) + "\n")
     if runs:
         with open(os.path.join(out_dir, "per_sample.csv"), "w", newline="") as f:
             w = csv.writer(f)
             names = list(runs)
-            w.writerow(["dataset", "scene", "video", "ep_id", "start", "kind", "label", "instruction"]
+            w.writerow(["dataset", "scene", "video", "ep_id", "start", "kind", "label", "change", "instruction"]
                        + [f"{n}:{c}" for n in names for c in ("choice", "correct", "prob", "escalate")])
             for i, s in enumerate(samples):
                 row = [base.dataset_of(s), base.scene_of(s), s["video"], s["ep_id"], s["start"], KIND[s["kind"]],
-                       label_of(s), s["instruction"]]
+                       label_of(s), change_flag(s), s["instruction"]]
                 for n in names:
                     r = runs[n]
                     p = r["pred"][i]
                     row += ["GOAL" if p == -1 else ACTION_NAME[p], int(r["correct"][i]), f"{r['conf'][i]:.4f}",
                             f"{r['esc'][i]:.4f}"]
                 w.writerow(row)
+
+
+def _shortcut_report(sc):
+    md = ["", "## Shortcut checks (%)", "",
+          "`change`: samples whose label differs from the action just before (a goal after turning, a turn after "
+          "walking or the other way); `keep`: the previous action gives the answer away. STOP and first steps are in "
+          "neither. memory off: pose / motion inputs zeroed. swap: only left / right swapped in the instruction, "
+          "images unchanged (`turn flipped`: share of LEFT / RIGHT choices that become the other one). mirror: "
+          "the whole sample mirrored (`agreement`: the mirrored choice matches the mirror of the original).", ""]
+    rows = []
+    for name, r in sc.items():
+        f, m = r["full"], r.get("memory_off")
+        sw, mi = r.get("swap_directions"), r.get("mirror")
+        rows.append([
+            name, f"{_pct(f['acc'])}", f"{_pct(f['change'])} ({r['n_change']})", f"{_pct(f['keep'])} ({r['n_keep']})",
+            "–" if m is None else f"{_pct(m['acc'])} / {_pct(m['change'])} / {_pct(m['keep'])}",
+            "–" if sw is None else f"{_pct(sw['changed'])} ({sw['n']})",
+            "–" if sw is None else f"{_pct(sw['turn_flipped'])} ({sw['n_turn']})",
+            "–" if mi is None else f"{_pct(mi['acc_unmirrored'])} → {_pct(mi['acc_mirrored'])} ({mi['n']})",
+            "–" if mi is None else _pct(mi["agreement"]),
+        ])
+    md.append(_table(["checkpoint", "all", "change", "keep", "memory off: all / change / keep",
+                      "swap: decision changed", "swap: turn flipped", "mirror: accuracy", "mirror: agreement"], rows))
+    return md
 
 
 # ---------------------------------------------------------------------- main
@@ -295,6 +421,8 @@ def main():
     ap.add_argument("--correct_radius", type=float, default=LossWeights.correct_radius)
     ap.add_argument("--ece_bins", type=int, default=15)
     ap.add_argument("--skip_model", action="store_true", help="labels and instruction lengths only")
+    ap.add_argument("--checks", default=",".join(CHECKS), help=f"shortcut checks, comma separated ({', '.join(CHECKS)}); "
+                    "'none' = off. Each one is another pass over (a part of) the samples")
     args = ap.parse_args()
 
     samples = load_vln_samples(args.vln_dataset_use, stop_repeat=1)
@@ -314,7 +442,9 @@ def main():
     if 0 < args.max_samples < len(chosen):
         chosen = random.Random(0).sample(chosen, args.max_samples)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    runs, kept = {}, None
+    checks = [] if args.checks == "none" else [c for c in args.checks.split(",") if c]
+    assert set(checks) <= set(CHECKS), f"unknown check in {checks}"
+    runs, kept, extra = {}, None, {}
     for ckpt in args.ckpts:
         name = "/".join(os.path.normpath(ckpt).split(os.sep)[-2:])
         print(f"[diagnose] {name}: {len(chosen)} {args.split} samples", flush=True)
@@ -322,13 +452,18 @@ def main():
         s, rec = profile(model, chosen, tok, args.batch_size, args.num_workers, device, args.correct_radius)
         assert kept is None or len(s) == len(kept), "checkpoints with different action sets"
         kept, runs[name] = s, rec
+        if checks:
+            print(f"[diagnose] {name}: shortcut checks {checks}", flush=True)
+            extra[name] = run_checks(model, kept, tok, checks, batch_size=args.batch_size, num_workers=args.num_workers,
+                                     device=device, correct_radius=args.correct_radius)
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
     summary = summarize(kept, runs, args.legacy_stop_repeat, args.ece_bins)
     note = (f"{args.split} split ({args.val_split}, ratio {args.val_ratio}), {len(kept)} samples, each STOP once; "
             f"goal correct within {args.correct_radius} patches.")
-    write_report(args.out_dir, labels, trunc, summary, kept, runs, cfg_len, note)
+    shortcuts = summarize_checks(kept, runs, extra, args.correct_radius)
+    write_report(args.out_dir, labels, trunc, summary, kept, runs, cfg_len, note, shortcuts)
     print(open(os.path.join(args.out_dir, "report.md")).read())
 
 

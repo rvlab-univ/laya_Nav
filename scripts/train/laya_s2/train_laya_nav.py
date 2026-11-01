@@ -92,6 +92,7 @@ def parse_args():
     )
     base.add_stop_repeat_args(ap)
     base.add_memory_args(ap, keep_checkpoint=True)
+    base.add_shortcut_args(ap)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--log_every", type=int, default=20)
     ap.add_argument("--save_every", type=int, default=2000)
@@ -212,7 +213,8 @@ def main():
     if main_proc and args.val_split == "scene":
         print(f"val scenes: {sorted({base.scene_of(s) for s in val_s})}")
     kw = dict(goal_xy_order=args.goal_xy_order, with_traj=True, traj_steps=cfg.traj_steps, traj_starts=args.traj_starts)
-    train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, **kw)
+    train_ds = LayaS2Dataset(train_s, tok, cfg, args.teacher_latents, augment=True, mirror=args.mirror,
+                             memory_dropout=args.memory_dropout, **kw)
     val_ds = LayaS2Dataset(val_s, tok, cfg, args.teacher_latents, augment=False, **kw)
     collate = partial(collate_laya_s2, pad_id=tok.pad_token_id)
     train_sampler = DistributedSampler(train_ds, shuffle=True) if distributed else None
@@ -279,6 +281,7 @@ def main():
             f"memory: {cfg.num_history} history frames ({cfg.hist_recent} latest) | pose={cfg.hist_pose} "
             f"| motion tokens={cfg.motion_tokens} | history gradients={cfg.hist_grad}"
         )
+        print(base.shortcut_note(args))
         with open(os.path.join(args.output_dir, "args.json"), "w") as f:
             json.dump(vars(args), f, indent=2)
 
