@@ -39,6 +39,37 @@ LayaNav는 듀얼 시스템 VLN 에이전트의 두 시스템을 **445M 파라�
 
 목표 정확도는 학습에서 뺀 장면의 5,000샘플에서 목표 판단이 정답 목표로부터 1.5칸 안에 든 비율이다(`scripts/train/laya_s2/diagnose_decision.py`).
 
+## 수행 계획
+
+```mermaid
+%%{init: {"gantt": {"leftPadding": 170}}}%%
+gantt
+    title LayaNav 수행 계획 (5주)
+    dateFormat YYYY-MM-DD
+    axisFormat %m/%d
+    tickInterval 1week
+    weekday monday
+
+    section 환경 구축 · 데이터 준비
+    원본 재현 · 교사 판단 수집          :env, 2026-11-09, 1w
+    section 모델 학습
+    증류 학습 · 비교군 구성             :train, after env, 2w
+    중간 점검 (성능 유지 정도 확인)     :milestone, check, 2026-11-29, 0d
+    section 평가
+    성능 · 효율 측정 · 실패 사례 분석   :eval, after train, 2w
+    section 시연 · 정리
+    Go2 실기체 시연 · 최종 발표         :demo, 2026-12-07, 1w
+```
+
+| 주차 | 기간 | 작업 |
+|---|---|---|
+| 1주 | 11/9 – 11/15 | 환경 구축 · 데이터 준비 |
+| 2–3주 | 11/16 – 11/29 | 모델 학습. 3주차 끝에 중간 점검 |
+| 4–5주 | 11/30 – 12/13 | 평가 |
+| 5주 | 12/7 – 12/13 | 시연 · 정리 |
+
+위험 대응: 재현이 늦으면 평가 범위를 줄인다.
+
 ## 코드 위치
 
 | 경로 | 내용 |
