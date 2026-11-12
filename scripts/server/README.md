@@ -93,6 +93,17 @@ nohup bash scripts/server/train.sh N2 > logs/N2.log 2>&1 &     # ModernBERT-larg
 - N3, N6, N7, N8은 아직 구현하지 않았다.
 - 결과는 `runs/<이름>/log.jsonl`(학습·검증 기록)과 `runs/<이름>/last/`(체크포인트)에 남는다.
 
+## 진행 상황 보기
+
+```bash
+bash scripts/server/status.sh
+```
+
+한 화면에 아래 내용이 모두 나온다.
+- 학습마다: 실행 중인지, step / 전체 step, step당 시간, 남은 시간, 최근 손실(ce), 최근 검증 정확도
+- 교사 라벨: shard마다 진행 상황, 전체 속도와 남은 시간
+- GPU: 메모리, 사용률, 프로세스별 메모리
+
 ## 결과 가져오기
 
 - **수치**: `tail -n 3 runs/<이름>/log.jsonl`, `cat runs/teacher/stats.json`

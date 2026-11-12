@@ -159,6 +159,9 @@ def main():
     total = args.max_steps or max(1, int(steps_per_epoch * args.epochs))
     print("train %d rows, val %d unique samples, %d optimizer steps (%d per epoch)"
           % (len(train_rows), len(val_rows), total, steps_per_epoch), flush=True)
+    with open(os.path.join(args.out, "run.json"), "w") as f:   # read by scripts/server/status.sh
+        json.dump({"total_steps": total, "steps_per_epoch": steps_per_epoch, "train_rows": len(train_rows),
+                   "val_samples": len(val_rows), "args": vars(args)}, f, indent=2)
 
     opt = torch.optim.AdamW(model.param_groups(args.encoder_lr, args.head_lr, args.vision_lr),
                             weight_decay=args.weight_decay)
