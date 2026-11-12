@@ -16,6 +16,12 @@ pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorc
 pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.8/flash_attn-2.5.8+cu122torch2.3cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 (cd "$ROOT/NaVILA" && pip install -e . && pip install -e ".[train]")
 pip install transformers==4.37.2
+# NaVILA pins opencv-python, which needs the system libGL.so.1 (missing on the server, no root to add it).
+# The headless build of the same version has the same cv2 without GUI libraries. Both write the same cv2
+# folder, so remove both and install the headless one fresh (also correct on a rerun, after `pip install -e .`
+# has brought opencv-python back).
+pip uninstall -y opencv-python opencv-python-headless
+pip install --no-deps opencv-python-headless==4.8.0.74
 site_pkg="$(python -c 'import site; print(site.getsitepackages()[0])')"
 cp -r "$ROOT/NaVILA/llava/train/transformers_replace/"* "$site_pkg/transformers/"
 cp -r "$ROOT/NaVILA/llava/train/deepspeed_replace/"* "$site_pkg/deepspeed/"
@@ -27,8 +33,9 @@ snapshot_download("a8cheng/navila-llama3-8b-8f", local_dir=sys.argv[1])
 EOF
 
 python - <<'EOF'
-import torch, transformers, flash_attn
+import cv2, torch, transformers, flash_attn
 from llava.model.builder import load_pretrained_model  # noqa: F401  (the import NaVILA's evaluation needs)
+print("cv2", cv2.__version__)
 cuda = torch.cuda.is_available()
 print("torch", torch.__version__, "| cuda", cuda, "|", torch.cuda.get_device_name(0) if cuda else "-")
 print("transformers", transformers.__version__, "| flash_attn", flash_attn.__version__)
