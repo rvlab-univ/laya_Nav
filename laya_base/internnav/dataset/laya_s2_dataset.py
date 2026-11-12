@@ -1,0 +1,433 @@
+"""Dataset for the Laya-style lightweight System 2 (see internnav/model/basemodel/laya_s2).
+
+Samples are enumerated exactly like ``NavPixelGoalDataset`` (pixel-goal / turn / stop rounds every
+``sample_step`` frames), so that teacher latents extracted by
+``scripts/train/laya_s2/extract_teacher_latents.py`` can be joined by ``sample_key``.
+"""
+
+import hashlib
+import os
+import random
+import re
+from typing import Dict, List, Optional, Sequence
+
+import numpy as np
+import torch
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision.transforms import v2
+
+GOAL, TURN, STOP = 0, 1, 2
+
+
+def sample_key(video, ep_id, height, pitch_1, pitch_2, instruction, start_frame_id) -> str:
+    ins = hashlib.md5(instruction.encode("utf-8")).hexdigest()[:12]
+    return f"{video}|{ep_id}|{height}_{pitch_1}_{pitch_2}|{start_frame_id}|{ins}"
+
+
+def enumerate_samples(annotations, height, pitch_1, pitch_2, sample_step: int, num_future_steps: int):
+    """Mirror of the sample enumeration in ``NavPixelGoalDataset.__init__``."""
+    goals, turns, stops = [], [], []
+    for item in annotations["episodes"]:
+        ep_id, instruction, video = item["id"], item["instructions"], item["video"]
+        actions = item["actions"][1:] + [0]
+        pixel_goals = item["pixel_goals"]
+        n = len(actions)
+        if n < 4:
+            continue
+        # poses / actions are shared by the episode's samples (not copied): memory features (v4) and trajectory targets
+        poses = item.get(f"poses_{height}cm_{pitch_2}deg")
+        base = dict(video=video, ep_id=ep_id, height=height, pitch_1=pitch_1, pitch_2=pitch_2, instruction=instruction,
+                    poses=poses, acts=actions)
+        for r in range(n // sample_step + 1):
+            start = r * sample_step
+            if start == n or start == n - 1:
+                continue
+            goal_len, goal = pixel_goals[start]
+            if goal_len == -1:
+                if actions[start] == 1:
+                    continue
+                turn = []
+                for i in range(start, min(n, start + num_future_steps)):
+                    if actions[i] == 1:
+                        break
+                    turn.append(actions[i])
+                turns.append(dict(base, start=start, kind=TURN, action=turn[0]))
+            elif goal_len >= 3:
+                goals.append(dict(base, start=start, kind=GOAL, goal=list(goal), goal_len=goal_len))
+        stops.append(dict(base, start=n - 1, kind=STOP, action=0))
+    return goals, turns, stops
+
+
+def repeat_stops(samples: List[Dict], k: int) -> List[Dict]:
+    """Each STOP sample k times in place (copies next to each other, as ``load_vln_samples`` lists them)."""
+    assert k >= 1, "stop repeat must be >= 1"
+    return [s for s in samples for _ in range(k if s["kind"] == STOP else 1)]
+
+
+def load_vln_samples(dataset_use: str, sample_step=4, num_future_steps=4, pixel_goal_only=False, stop_repeat=5, seed=0):
+    """Registry names, comma separated; ``name%30`` keeps a fixed random 30% of that dataset's samples.
+
+    The trainers load with ``stop_repeat=1`` and repeat STOP after the train / held-out split (``repeat_stops``), so
+    that validation can count every STOP sample once."""
+    from .internvla_n1_lerobot_dataset import data_list, get_annotations_from_lerobot_data
+
+    samples = []
+    for data in data_list(dataset_use.split(",")):
+        height, pitch_1, pitch_2 = data.get("height"), data.get("pitch_1"), data.get("pitch_2")
+        # float32 pose arrays: nested lists would take ~9x the memory on rxr / scalevln, per dataloader worker
+        ann = get_annotations_from_lerobot_data(data["data_path"], f"{height}cm_{pitch_2}deg", pose_dtype=np.float32)
+        goals, turns, stops = enumerate_samples(ann, height, pitch_1, pitch_2, sample_step, num_future_steps)
+        cur = goals if pixel_goal_only else goals + turns + stops * stop_repeat
+        # scenes are read by a thread pool, so the order varies between runs; every rank (DistributedSampler) and
+        # every resumed run must see the same list
+        cur.sort(key=lambda s: (s["video"], s["ep_id"], s["instruction"], s["start"], s["kind"]))
+        rate = data.get("sampling_rate", 1.0)
+        if rate < 1.0:
+            rng = random.Random(f"{seed}|{data['data_path']}|{height}_{pitch_1}_{pitch_2}")
+            cur = rng.sample(cur, int(len(cur) * rate))
+        print(f"[laya_s2] {data['data_path']} {height}cm {pitch_1}/{pitch_2}deg: "
+              f"goal={len(goals)} turn={len(turns)} stop={len(stops)} -> {len(cur)}")
+        samples.extend(cur)
+    return samples
+
+
+def frame_path(s: Dict, frame_id: int, look_down: bool = False) -> str:
+    pitch = s["pitch_2"] if look_down else s["pitch_1"]
+    return os.path.join(
+        s["video"], f"observation.images.rgb.{s['height']}cm_{pitch}deg", f"episode_{s['ep_id']:06d}_{frame_id}.jpg"
+    )
+
+
+def trajectory_frame_ids(goal_len: int, max_len: int = 12) -> np.ndarray:
+    """Frames along the way to the pixel goal used as System 1 starting points (as in NavPixelGoalDataset)."""
+    ids = np.arange(0, goal_len, 2)
+    if len(ids) > max_len:
+        ids = np.arange(0, goal_len, int(np.ceil(goal_len / max_len)))
+    return ids
+
+
+def trajectory_target(s: Dict, cid: int, steps: int) -> np.ndarray:
+    """Remaining path from frame start + cid to the goal, in the DualVLN System 1 format [steps, 3]."""
+    from .internvla_n1_lerobot_dataset import (
+        clip_or_pad,
+        get_trajectory_relative_to_frame,
+        interpolate_and_resample_trajectory,
+    )
+
+    pose = np.asarray(s["poses"][s["start"] : s["start"] + s["goal_len"] + 1], dtype=np.float64)
+    pose = pose.reshape(len(pose), 4, 4)
+    rel = get_trajectory_relative_to_frame(pose[cid:], camera_deg=s["pitch_2"])
+    _, deltas = interpolate_and_resample_trajectory(rel, steps)
+    return clip_or_pad(deltas, steps).astype(np.float32)
+
+
+def history_ids(n_past: int, n: int, recent: int = 0) -> List[int]:
+    """Frames fed as history out of the n_past frames before the current one: the ``recent`` latest frames, plus
+    the remaining slots spread evenly over the older ones (recent = 0: all n spread over the whole past, as before).
+    Shared by the dataset and the agents, so training and inference see the same frames."""
+    if n_past <= 0:
+        return []
+    if recent <= 0:
+        return np.unique(np.linspace(0, n_past - 1, n, dtype=np.int32)).tolist()
+    rec = list(range(max(0, n_past - recent), n_past))
+    n_old = n_past - len(rec)
+    old = np.unique(np.linspace(0, n_old - 1, n - len(rec), dtype=np.int32)).tolist() if n_old > 0 else []
+    return old + rec
+
+
+def robot_poses(extrinsics, camera_deg) -> np.ndarray:
+    """Camera extrinsics of an episode [T, 4, 4] -> robot (x, y, yaw) [T, 3] in the frame of the first one
+    (x forward, y left, yaw counter-clockwise)."""
+    from .internvla_n1_lerobot_dataset import get_trajectory_relative_to_frame
+
+    return get_trajectory_relative_to_frame(np.asarray(extrinsics, dtype=np.float64), camera_deg=camera_deg)
+
+
+# habitat STOP / FORWARD / LEFT / RIGHT -> motion token ids (0: no step / unknown)
+MOTION_ACTION = {0: 1, 1: 2, 2: 3, 3: 4}
+N_MOTION_ACTIONS = 5
+STEP_M, STEP_RAD = 0.25, np.radians(15.0)
+
+
+def _wrap(a):
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def memory_features(xyyaw, ids: List[int], cur: int, actions, n_hist: int, n_motion: int):
+    """Where each history frame was seen from, and the last steps (v4 memory).
+
+    xyyaw [>= cur + 1, 3]: robot poses in any fixed 2D frame (x, y, counter-clockwise yaw), or None if unknown;
+    ids: history frame ids (< cur); actions[i]: habitat action taken at frame i, or None.
+    Returns hist_pose [n_hist, 5] (x / 4 m, y / 4 m, sin yaw, cos yaw relative to the current pose, steps ago / 64)
+    and, for the n_motion steps before cur (oldest first), motion_act [n_motion] (MOTION_ACTION ids) and
+    motion_disp [n_motion, 3] (the measured move of that step in its own frame, in 0.25 m / 15 degree units).
+    """
+    hist_pose = np.zeros((n_hist, 5), np.float32)
+    motion_act = np.zeros(n_motion, np.int64)
+    motion_disp = np.zeros((n_motion, 3), np.float32)
+    have_pose = xyyaw is not None and len(xyyaw) > cur
+    if have_pose:
+        p = np.asarray(xyyaw, dtype=np.float64)
+        c, s = np.cos(-p[cur, 2]), np.sin(-p[cur, 2])
+        for j, i in enumerate(ids[:n_hist]):
+            d = p[i, :2] - p[cur, :2]
+            dyaw = _wrap(p[i, 2] - p[cur, 2])
+            hist_pose[j] = (c * d[0] - s * d[1]) / 4, (s * d[0] + c * d[1]) / 4, np.sin(dyaw), np.cos(dyaw), (cur - i) / 64
+    for j, k in enumerate(range(cur - n_motion, cur)):
+        if k < 0:
+            continue
+        if actions is not None and k < len(actions):
+            motion_act[j] = MOTION_ACTION.get(int(actions[k]), 0)
+        if have_pose:
+            c, s = np.cos(-p[k, 2]), np.sin(-p[k, 2])
+            d = p[k + 1, :2] - p[k, :2]
+            motion_disp[j] = ((c * d[0] - s * d[1]) / STEP_M, (s * d[0] + c * d[1]) / STEP_M,
+                              _wrap(p[k + 1, 2] - p[k, 2]) / STEP_RAD)
+    return hist_pose, motion_act, motion_disp
+
+
+# ---------------------------------------------------------------------- v5: against copying the previous action
+# change_flag values
+CHANGE, KEEP, NO_PREV = 1, 0, -1
+MIRROR_ACTION = {2: 3, 3: 2}  # habitat LEFT <-> RIGHT
+
+
+def change_flag(s: Dict) -> int:
+    """Is the label different from the action taken just before this sample? 1 (change point: the previous action
+    does not give the answer away, e.g. a goal after turning), 0 (same as before: still turning the same way, or a
+    goal while walking forward), -1 (no previous action, or a STOP sample: STOP is repeated in training already)."""
+    acts, start = s.get("acts"), s["start"]
+    if s["kind"] == STOP or acts is None or start <= 0 or start > len(acts):
+        return NO_PREV
+    prev = int(acts[start - 1])
+    if s["kind"] == GOAL:
+        return {1: KEEP, 2: CHANGE, 3: CHANGE}.get(prev, NO_PREV)
+    if prev not in (1, 2, 3):
+        return NO_PREV
+    return KEEP if prev == s["action"] else CHANGE
+
+
+_SWAP_WORD = re.compile(r"\b(counter-?clockwise|anti-?clockwise|clockwise|left|right)(?=(?:most|hand|wards?)?\b)",
+                        re.IGNORECASE)
+# "right" / "left" that are no direction: such instructions are not mirrored (rather than swapped wrongly)
+_NOT_DIRECTION = re.compile(
+    r"\ball right\b|\bright\s+(?:in front|next|there|here|away|now|behind|beside|below|above|under|inside|outside)\b"
+    r"|\b(?:you|you've|have|has|had|just|we|we've|i)\s+left\b|\bleft\s+(?:over|behind)\b",
+    re.IGNORECASE,
+)
+_NOT_ENGLISH = re.compile(r"[^\x00-\x7f\u2018\u2019\u201c\u201d]")  # e.g. the RxR Hindi / Telugu instructions
+
+
+def _swapped(m) -> str:
+    w = m.group(0)
+    low = w.lower()
+    t = {"left": "right", "right": "left", "clockwise": "counterclockwise"}.get(low, "clockwise")
+    return t.upper() if w.isupper() and len(w) > 1 else (t.capitalize() if w[0].isupper() else t)
+
+
+def mirror_instruction(text: str) -> Optional[str]:
+    """The instruction for the left-right mirrored scene (left <-> right, clockwise <-> counterclockwise), or None
+    when it cannot be mirrored safely (not English, or "right" / "left" used as no direction)."""
+    if _NOT_ENGLISH.search(text) or _NOT_DIRECTION.search(text):
+        return None
+    return _SWAP_WORD.sub(_swapped, text)
+
+
+def mirror_poses(xyyaw):
+    """Robot poses (x forward, y left, counter-clockwise yaw) of the mirrored episode: y and yaw change sign."""
+    if xyyaw is None:
+        return None
+    p = np.array(xyyaw, dtype=np.float64, copy=True)
+    p[:, 1:3] *= -1
+    return p
+
+
+def make_image_transform(cfg, augment: bool = False):
+    s = cfg.image_size
+    ops = [v2.ToImage(), v2.Resize((s, s), antialias=True)]
+    if augment:
+        ops.append(v2.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2))
+    ops += [v2.ToDtype(torch.float32, scale=True), v2.Normalize(cfg.image_mean, cfg.image_std)]
+    return v2.Compose(ops)
+
+
+class TeacherLatentStore:
+    """keys.txt + latents.npy ([N, n_query, latent_dim] fp16), memory-mapped."""
+
+    def __init__(self, root: str):
+        with open(os.path.join(root, "keys.txt")) as f:
+            self.index = {k.rstrip("\n"): i for i, k in enumerate(f)}
+        self.root = root
+        self._arr = None
+
+    def get(self, key: str) -> Optional[np.ndarray]:
+        i = self.index.get(key)
+        if i is None:
+            return None
+        if self._arr is None:  # open lazily so each dataloader worker gets its own mmap
+            self._arr = np.load(os.path.join(self.root, "latents.npy"), mmap_mode="r")
+        return np.asarray(self._arr[i], dtype=np.float32)
+
+
+class LayaS2Dataset(Dataset):
+    def __init__(
+        self,
+        samples: List[Dict],
+        tokenizer,
+        cfg,  # LayaS2Config
+        teacher_latents: Optional[str] = None,
+        augment: bool = False,
+        goal_xy_order: str = "xy",
+        with_traj: bool = False,  # LayaNav: add (current look-down frame, remaining path) pairs to goal samples
+        traj_steps: int = 32,
+        traj_starts: int = 1,  # starting frames per goal sample (the DualVLN System 1 trains on all of them, <= 12)
+        mirror: float = 0.0,  # v5: share of samples mirrored left-right (images, labels, poses, instruction words)
+        memory_dropout: float = 0.0,  # v5: share of samples whose pose / motion inputs are zeroed (1 = always)
+        swap_directions: float = 0.0,  # diagnosis only: swap left / right in the instruction, images unchanged
+    ):
+        self.actions = list(cfg.actions)
+        self.samples = [s for s in samples if s["kind"] == GOAL or s["action"] in self.actions]
+        if len(self.samples) != len(samples):
+            print(f"[laya_s2] dropped {len(samples) - len(self.samples)} samples with actions outside {self.actions}")
+        self.tok = tokenizer
+        self.cfg = cfg
+        self.store = TeacherLatentStore(teacher_latents) if teacher_latents else None
+        self.goal_xy_order = goal_xy_order
+        self.transform = make_image_transform(cfg, augment)
+        self.augment = augment
+        self.with_traj = with_traj
+        self.traj_steps = traj_steps
+        self.traj_starts = traj_starts
+        self.mirror = mirror
+        self.memory_dropout = memory_dropout
+        self.swap_directions = swap_directions
+
+    def __len__(self):
+        return len(self.samples)
+
+    def _img(self, path):
+        return self.transform(Image.open(path).convert("RGB"))
+
+    def __getitem__(self, i):
+        s = self.samples[i]
+        start = s["start"]
+        instruction, flip = s["instruction"], False
+        if self.mirror > 0 and random.random() < self.mirror:
+            m = mirror_instruction(instruction)
+            instruction, flip = (m, True) if m is not None else (instruction, False)
+        elif self.swap_directions > 0 and random.random() < self.swap_directions:
+            instruction = mirror_instruction(instruction) or instruction
+        hist_ids = history_ids(start, self.cfg.num_history, getattr(self.cfg, "hist_recent", 0))
+
+        S = self.cfg.image_size
+        hist = torch.zeros(self.cfg.num_history, 3, S, S)
+        hist_mask = torch.zeros(self.cfg.num_history, dtype=torch.bool)
+        for j, fid in enumerate(hist_ids):
+            hist[j] = self._img(frame_path(s, fid))
+            hist_mask[j] = True
+
+        down_raw = Image.open(frame_path(s, start, look_down=True)).convert("RGB")
+        item = dict(
+            instruction=instruction,  # raw text, for the grounding prior and the matching loss
+            input_ids=torch.tensor(
+                self.tok(instruction, truncation=True, max_length=self.cfg.max_text_len)["input_ids"]
+            ),
+            hist_pixels=hist,
+            hist_mask=hist_mask,
+            cur_pixels=self._img(frame_path(s, start)),
+            down_pixels=self.transform(down_raw),
+            is_goal=s["kind"] == GOAL,
+            action_idx=-1,
+            goal_xy=torch.zeros(2),
+            latent=torch.zeros(self.cfg.n_query, self.cfg.latent_dim),
+            latent_mask=False,
+            change=change_flag(s),
+        )
+        if getattr(self.cfg, "hist_pose", False) or getattr(self.cfg, "motion_tokens", 0):
+            xyyaw = robot_poses(s["poses"], s["pitch_2"]) if s.get("poses") is not None else None
+            acts = s.get("acts")
+            if flip:
+                xyyaw = mirror_poses(xyyaw)
+                acts = None if acts is None else [MIRROR_ACTION.get(int(a), int(a)) for a in acts]
+            hp, ma, md = memory_features(xyyaw, hist_ids, start, acts, self.cfg.num_history,
+                                         getattr(self.cfg, "motion_tokens", 0))
+            if self.memory_dropout > 0 and random.random() < self.memory_dropout:
+                hp, ma, md = np.zeros_like(hp), np.zeros_like(ma), np.zeros_like(md)
+            item.update(hist_pose=torch.from_numpy(hp), motion_act=torch.from_numpy(ma), motion_disp=torch.from_numpy(md))
+        if s["kind"] == GOAL:
+            a, b = s["goal"]
+            x, y = (a, b) if self.goal_xy_order == "xy" else (b, a)
+            W, H = down_raw.size
+            item["goal_xy"] = torch.tensor([x / W, y / H], dtype=torch.float32).clamp(0, 1)
+            if flip:
+                item["goal_xy"][0] = 1 - item["goal_xy"][0]
+            if self.store is not None and not flip:  # teacher latents were extracted from the unmirrored sample
+                lat = self.store.get(sample_key(*(s[k] for k in KEY_FIELDS)))
+                if lat is not None:
+                    item["latent"] = torch.from_numpy(lat)
+                    item["latent_mask"] = True
+        else:
+            item["action_idx"] = self.actions.index(MIRROR_ACTION.get(s["action"], s["action"]) if flip else s["action"])
+        if self.with_traj:
+            K = self.traj_starts
+            item.update(
+                traj_pixels=torch.zeros(K, 3, S, S),
+                traj=torch.zeros(K, self.traj_steps, 3),
+                traj_mask=torch.zeros(K, dtype=torch.bool),
+            )
+            for j, cid in enumerate(self._pick_starts(self._traj_start_ids(s), K, self.augment)):
+                item["traj_pixels"][j] = self._img(frame_path(s, start + cid, look_down=True))
+                item["traj"][j] = torch.from_numpy(trajectory_target(s, cid, self.traj_steps))
+                item["traj_mask"][j] = True
+            if flip:  # (dx, dy, yaw): sideways and heading change sign
+                item["traj_pixels"] = item["traj_pixels"].flip(-1)
+                item["traj"][..., 1:] *= -1
+        if flip:
+            for k in ("hist_pixels", "cur_pixels", "down_pixels"):
+                item[k] = item[k].flip(-1)
+        return item
+
+    @staticmethod
+    def _traj_start_ids(s: Dict) -> np.ndarray:
+        if s["kind"] != GOAL or s.get("poses") is None:
+            return np.zeros(0, dtype=int)
+        ids = trajectory_frame_ids(s["goal_len"])
+        return ids[s["start"] + ids < len(s["poses"])]  # starting frames that exist in the episode
+
+    @staticmethod
+    def _pick_starts(ids: np.ndarray, k: int, random_pick: bool) -> List[int]:
+        """Up to k starting frames: random ones (training) or evenly spread, the middle one for k = 1 (validation)."""
+        n = min(k, len(ids))
+        if n == 0:
+            return []
+        if random_pick:
+            return [int(c) for c in np.random.choice(ids, n, replace=False)]
+        if n == 1:
+            return [int(ids[len(ids) // 2])]
+        return [int(ids[j]) for j in np.unique(np.linspace(0, len(ids) - 1, n).round().astype(int))]
+
+
+KEY_FIELDS = ("video", "ep_id", "height", "pitch_1", "pitch_2", "instruction", "start")
+
+
+def collate_laya_s2(batch: Sequence[Dict], pad_id: int) -> Dict[str, torch.Tensor]:
+    ids = [b["input_ids"] for b in batch]
+    input_ids = torch.nn.utils.rnn.pad_sequence(ids, batch_first=True, padding_value=pad_id)
+    text_mask = torch.arange(input_ids.shape[1])[None] < torch.tensor([len(x) for x in ids])[:, None]
+    out = dict(input_ids=input_ids, text_mask=text_mask, instructions=[b["instruction"] for b in batch])
+    for k in ("hist_pixels", "hist_mask", "cur_pixels", "down_pixels", "goal_xy", "latent"):
+        out[k] = torch.stack([b[k] for b in batch])
+    for k in ("is_goal", "latent_mask", "action_idx", "change"):
+        if k in batch[0]:
+            out[k] = torch.tensor([b[k] for b in batch])
+    if "traj" in batch[0]:  # [B, K, ...]
+        for k in ("traj_pixels", "traj", "traj_mask"):
+            out[k] = torch.stack([b[k] for b in batch])
+    for k in MEMORY_KEYS:  # v4 memory
+        if k in batch[0]:
+            out[k] = torch.stack([b[k] for b in batch])
+    return out
+
+
+MEMORY_KEYS = ("hist_pose", "motion_act", "motion_disp")

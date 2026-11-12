@@ -1,0 +1,19 @@
+# 장비마다 따로 만드는 것 (git에 올리지 않음)
+env/
+data/
+assets/
+runs/
+logs/
+checkpoints/
+
+# 큰 파일
+*.tar
+*.tar.gz
+*.pt
+*.npy
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
