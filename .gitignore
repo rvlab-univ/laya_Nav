@@ -1,5 +1,6 @@
 # 장비마다 따로 만드는 것 (git에 올리지 않음)
 env/
+env_vlnce/
 data/
 assets/
 runs/

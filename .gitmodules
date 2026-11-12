@@ -5,3 +5,6 @@
 [submodule "third_party/laya_src"]
 	path = third_party/laya_src
 	url = https://github.com/NandhaKishorM/laya
+[submodule "third_party/habitat-lab"]
+	path = third_party/habitat-lab
+	url = https://github.com/facebookresearch/habitat-lab.git

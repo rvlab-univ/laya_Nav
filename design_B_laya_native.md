@@ -428,12 +428,25 @@ Laya는 영상 토큰을 본 적이 없으므로, 투영층과 프레임·위치
 
 ### 7.1 폐루프 (이 PC)
 
-- NaVILA 평가 루프 `navila_trainer.py`를 쓰고, 8B 호출 자리에서 학생 프로세스(`lightnav/server.py`)를 부른다.
-  - 요청: 지시문, 이미지 8장(`sample_and_pad_images` 결과), 실제 프레임 수
-  - 응답: `ANSWERS` 중 한 문장, 확률 10개, 걸린 시간(ms)
-- **정답 재생 확인(G3)**: 학생 대신 정답 행동을 3개까지 묶어 문장으로 돌려주는 가짜 학생을 붙인다. R2R val_unseen 50 에피소드에서 SR 95% 이상이어야 한다. 정답 행동은 VLN-CE의 `val_unseen_gt.json.gz`에 있다(`actions`, 1,839개, 2026-11-12 확인).
-- Habitat 0.1.7 빌드가 안 될 때의 대안은 정해지지 않았다(11절).
-- 지표: SR, SPL, NE, OS, 판단 1회 시간(ms), 에피소드당 판단 횟수, GPU 메모리, 파라미터 수.
+2026-11-13에 만들고 점검했다. 사용법과 점검 결과는 `scripts/eval/README.md`에 있다.
+
+- **평가 루프** `scripts/eval_vlnce.py`
+  - `navila_trainer.py`의 루프를 그대로 옮겼다: 저수준 행동마다 프레임 한 장, 8장 고르기, 답 해석, 행동 대기열.
+  - 설정 yaml, VLN-CE 측정, 데이터셋 코드는 NaVILA 것을 불러 쓴다. NaVILA 코드는 고치지 않는다.
+  - 8B 호출 자리에서 학생 프로세스(`lightnav/server.py`)에 HTTP로 묻는다.
+    - 요청: 지시문, 8장 중 실제 프레임(원본 RGB)과 그 위치
+    - 응답: `ANSWERS` 중 한 문장, 확률 10개, 걸린 시간(ms)
+- **환경** `env_vlnce`(`scripts/eval/setup_vlnce_env.sh`)
+  - Python 3.8, 미리 빌드된 habitat-sim 0.1.7 headless, habitat-lab v0.1.7(서브모듈)
+  - numpy는 1.23.5로 고정한다. habitat-sim 0.1.7이 `np.float`를 쓴다.
+- **장면**: Scene-N1의 `mp3d_ce`(90개)를 쓴다. R2R 1,839개 중 97.6%의 측지 거리가 VLN-CE 파일과 1 cm 안으로 같다.
+- **정답 재생 확인(G3)**: 통과했다.
+  - R2R 50개: SR 100.0, nDTW 100.0
+  - RxR 50개: SR 94.0, nDTW 98.0. 실패 3개는 목표까지 경로가 없는 에피소드다.
+  - **RxR 정답 행동은 30° 회전 기준이다.** 15°로 재생하면 SR이 10%로 떨어진다. G3는 30°로 확인했고, 학생 평가는 NaVILA와 같게 15°로 한다.
+- **하한선** "전진 75 cm"만: R2R 100개에서 SR 0.0, OS 3.0
+- **판단 시간**: 학습 전 학생이 RTX 5060 Ti에서 중앙값 55.5 ms다. 이미지 8장을 매번 모두 인코딩한 값이다.
+- **지표**: SR, SPL, NE, OS, nDTW, TL, 판단 1회 시간(ms), 에피소드당 판단 횟수, GPU 메모리, 파라미터 수. 요약과 쌍 비교는 `scripts/eval_summary.py`로 한다.
 
 ### 7.2 오프라인 진단 (`scripts/diagnose.py`, 서버)
 
@@ -530,7 +543,6 @@ QUESTIONS_3 = {
 
 **정할 것**
 
-- Habitat 0.1.7 빌드가 안 될 때의 폐루프 대안. `PLAN.md`의 2안은 InternNav의 Habitat 0.2.4 루프를 쓰는 것이라 DualVLN을 쓰지 않는다는 결정과 부딪힌다.
 - 이 PC에서 서버로 데이터를 보내는 방법(DAgger에 필요). 비공개 Hugging Face 데이터셋에 올리고 서버에서 받는 방법이 가능해 보인다.
 - `PLAN.md` 1절(학생 크기 0.45B, mmBERT-base)과 4절을 이 문서에 맞춰 고칠지.
 
