@@ -21,24 +21,23 @@ NaVILA(8B VLA)의 판단 부분을 BERT 계열 비자기회귀 판단 모델(Lay
 
 ## 받기 (서버 웹 터미널)
 
-새로 받기:
-
 ```bash
 cd ~
 git clone --recurse-submodules https://github.com/rvlab-univ/laya_Nav.git light_nav
-```
-
-기존 LayaNav 클론(`~/laya_Nav`)은 `layanav` 브랜치를 따라가도록 한 번만 바꾼다.
-작업 폴더의 파일은 바뀌지 않는다. 바꾸기 전에 `git pull`을 하면 "unrelated histories" 오류로 멈춘다.
-
-```bash
-cd ~/laya_Nav && git fetch origin && git branch -m main layanav && git branch -u origin/layanav layanav
 ```
 
 이후 갱신:
 
 ```bash
 cd ~/light_nav && git pull && git submodule update --init
+```
+
+2026-11-12 이전에 `main`(LayaNav)을 받아 둔 클론이 있으면, 그 클론에서 아래 명령을 한 번 실행한다.
+- 그 클론이 `layanav` 브랜치를 따라가게 된다. 작업 폴더의 파일은 바뀌지 않는다.
+- 바꾸기 전에 `git pull`을 하면 "unrelated histories" 오류로 멈춘다.
+
+```bash
+git fetch origin && git branch -m main layanav && git branch -u origin/layanav layanav
 ```
 
 ## 테스트 (이 PC)
