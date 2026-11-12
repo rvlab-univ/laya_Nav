@@ -1,6 +1,7 @@
 """Frame selection against NaVILA's own code, annotation rows, mirroring, the validation split."""
 import ast
 import copy
+import gzip
 import json
 import os
 
@@ -9,10 +10,10 @@ import pytest
 import torch
 from PIL import Image
 
-from conftest import DATA, NAVILA
+from conftest import DATA, NAVILA, ROOT
 from lightnav.data import (NavDataset, choose_val_episodes, clean_instruction, collate, dropped_instruction_tokens,
-                           frame_slots, load_rows, low_level_actions, mirror_instruction, split_rows,
-                           target_distribution)
+                           frame_slots, load_rows, load_split, low_level_actions, make_val_split, mirror_instruction,
+                           rxr_episode_scenes, split_rows, target_distribution)
 from lightnav.model import LayaNativeConfig
 from lightnav.questions import ANSWERS, MIRROR, QUESTION
 
@@ -128,6 +129,47 @@ def test_val_split_holds_out_whole_scenes():
     assert not {scenes[e] for e in val} & {scenes[e] for e in episodes if e not in val}
     with pytest.raises(KeyError):
         choose_val_episodes(episodes + ["999"], scenes)
+
+
+def test_joint_split_holds_out_the_same_scenes_everywhere():
+    r2r = [str(i) for i in range(100)]
+    rxr = [str(1000 + i) for i in range(80)]
+    scenes = {"r2r": {e: "scene%d" % (int(e) % 20) for e in r2r}, "rxr": {e: "scene%d" % (int(e) % 16) for e in rxr}}
+    val, held = make_val_split({"r2r": r2r, "rxr": rxr}, scenes, frac=0.1, seed=0)
+    assert len(held) == 2
+    for name, eps in (("r2r", r2r), ("rxr", rxr)):
+        assert {scenes[name][e] for e in val[name]} <= held
+        assert not {scenes[name][e] for e in eps if e not in val[name]} & held
+    assert make_val_split({"r2r": r2r, "rxr": rxr}, scenes, frac=0.1, seed=0) == (val, held)
+    # without scenes for every source each one is split on its own
+    val2, held2 = make_val_split({"r2r": r2r, "rxr": rxr}, {"r2r": scenes["r2r"], "rxr": None}, frac=0.1)
+    assert held2 is None and val2["r2r"] == choose_val_episodes(r2r, scenes["r2r"], 0.1, 0)
+
+
+def test_rxr_episode_scenes_by_instruction_text(tmp_path):
+    guide = tmp_path / "guide.jsonl.gz"
+    with gzip.open(guide, "wt") as f:
+        for scan, text in (("sA", "Turn left at the sofa."), ("sB", "Walk past the bed, then stop."),
+                           ("sC", "Go up."), ("sD", "Go up.")):
+            f.write(json.dumps({"scan": scan, "instruction": text}) + "\n")
+    path = str(tmp_path / "a.json")
+    write_annotations(path, [annotation("41", 0, 1, 6, q="turn left at the sofa"),
+                             annotation("41", 1, 4, 0, q="turn left at the sofa"),
+                             annotation("42", 0, 1, 0, q="Walk past the bed then stop")])
+    assert rxr_episode_scenes(str(guide), load_rows(path, "rxr")) == {"41": "sA", "42": "sB"}
+    write_annotations(path, [annotation("43", 0, 1, 0, q="Go up.")])           # text in two scenes
+    with pytest.raises(KeyError):
+        rxr_episode_scenes(str(guide), load_rows(path, "rxr"))
+
+
+def test_committed_split_is_scene_level():
+    path = os.path.join(ROOT, "splits", "val_scenes.json")
+    if not os.path.exists(path):
+        pytest.skip("no splits/val_scenes.json")
+    with open(path) as f:
+        split = json.load(f)
+    assert json.loads(split["mode"]) == {"r2r": "scene", "rxr": "scene"} and len(split["held_scenes"]) == 3
+    assert load_split(path).keys() == {"r2r", "rxr"}
 
 
 def test_split_keeps_copies_together(tmp_path):

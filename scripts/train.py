@@ -35,6 +35,7 @@ def parse_args():
     p.add_argument("--only_available", action="store_true", help="keep only episodes whose frame folder exists")
     p.add_argument("--split", default=None, help="validation split file; made at <out>/split.json when missing")
     p.add_argument("--r2r_scenes", default=None, help="VLN-CE train.json.gz, for a scene-level split of R2R")
+    p.add_argument("--rxr_scenes", default=None, help="RxR rxr_train_guide.jsonl.gz, for a scene-level split of RxR")
     p.add_argument("--val_frac", type=float, default=0.05)
     p.add_argument("--laya", default="english", help="Laya checkpoint to start from; 'none' to use --encoder")
     p.add_argument("--encoder", default="answerdotai/ModernBERT-large")
@@ -66,7 +67,7 @@ def load_data(args):
     """`(train rows with NaVILA's copies, unique validation rows, image roots)`."""
     sources = [("r2r", args.r2r_ann, args.r2r_frames, args.r2r_scenes)]
     if args.rxr_ann:
-        sources.append(("rxr", args.rxr_ann, args.rxr_frames, None))
+        sources.append(("rxr", args.rxr_ann, args.rxr_frames, args.rxr_scenes))
     rows, roots, scenes = [], {}, {}
     for name, ann, frames, scene_file in sources:
         part = D.load_rows(ann, name)
@@ -80,15 +81,20 @@ def load_data(args):
             part = [r for r in part if r.prefix in have]
         rows += part
         roots[name] = frames
-        scenes[name] = D.episode_scenes(scene_file) if scene_file else None
+        if not scene_file:
+            scenes[name] = None
+        elif name == "rxr":
+            scenes[name] = D.rxr_episode_scenes(scene_file, part)
+        else:
+            scenes[name] = D.episode_scenes(scene_file)
         print("%s: %d rows, %d episodes" % (name, len(part), len({r.episode for r in part})), flush=True)
     split = args.split or os.path.join(args.out, "split.json")
     if not os.path.exists(split):
-        val = {name: D.choose_val_episodes([r.episode for r in rows if r.source == name], scenes[name],
-                                           args.val_frac, args.seed) for name in roots}
+        episodes = {name: [r.episode for r in rows if r.source == name] for name in roots}
+        val, held = D.make_val_split(episodes, scenes, args.val_frac, args.seed)
         mode = {name: "scene" if scenes[name] else "episode" for name in roots}
-        D.save_split(split, val, json.dumps(mode))
-        print("wrote %s (%s)" % (split, mode), flush=True)
+        D.save_split(split, val, json.dumps(mode), held)
+        print("wrote %s (%s, held-out scenes: %s)" % (split, mode, sorted(held) if held else "-"), flush=True)
     train, held = D.split_rows(rows, D.load_split(split))
     unique = list({r.key: r for r in held}.values())
     return train, unique, roots
@@ -204,7 +210,7 @@ def main():
                 log.write(json.dumps(rec) + "\n")
                 log.flush()
                 running, seen, started = 0.0, 0, time.time()
-            if step % args.eval_every == 0 or step == total:
+            if val_rows and (step % args.eval_every == 0 or step == total):
                 rec = {"step": step, "val": evaluate(model, val_loader, device)}
                 print(json.dumps(rec), flush=True)
                 log.write(json.dumps(rec) + "\n")

@@ -10,8 +10,11 @@ NaVILA(8B VLA)의 판단 부분을 BERT 계열 비자기회귀 판단 모델(Lay
 
 | 경로 | 내용 |
 |---|---|
-| `lightnav/` | 학생 모델 패키지 (질문 정의, 데이터, 모델, 지표) |
-| `scripts/` | 학습 등 실행 스크립트 |
+| `lightnav/` | 학생 모델 패키지 (질문 정의, 데이터, 모델, 지표, 교사 점수 계산) |
+| `scripts/` | 학습, 교사 라벨 추출(`extract_teacher_probs.py`), 검증 분리 만들기(`make_split.py`) |
+| `scripts/server/` | 서버(H200, 웹 터미널)용 실행 스크립트. 순서는 [scripts/server/README.md](scripts/server/README.md) |
+| `splits/val_scenes.json` | 모든 실험이 함께 쓰는 검증 분리 (MP3D 장면 61개 중 3개) |
+| `requirements/student.txt` | 학생 환경 패키지 |
 | `tests/` | 테스트 |
 | `laya_base/` | LayaNav 코드 복사본 (`layanav` 브랜치 커밋 `6f94c26`, 참고용, 수정하지 않음). 출처는 [SOURCES.md](laya_base/SOURCES.md) |
 | `NaVILA/` | 서브모듈: [AnjieCheng/NaVILA](https://github.com/AnjieCheng/NaVILA) `76b98f2`. 교사 모델과 평가 루프 |
@@ -20,6 +23,8 @@ NaVILA(8B VLA)의 판단 부분을 BERT 계열 비자기회귀 판단 모델(Lay
 `env/`, `data/`, `assets/`, `runs/`, `logs/`는 git에 올리지 않는다. 각 장비에서 따로 만든다.
 
 ## 받기 (서버 웹 터미널)
+
+받은 뒤의 환경 구축, 데이터, 교사 라벨, 학습 순서는 [scripts/server/README.md](scripts/server/README.md)에 있다.
 
 ```bash
 cd ~

@@ -140,6 +140,9 @@ NaVILA 8B의 학습 데이터는 `r2r+rxr+envdrop+human+scanqa+video_chatgpt+sha
 | `lightnav/questions.py` | 질문 정의, 답 문장 ↔ 선택지 번호, 결정 규칙 |
 | `lightnav/data.py` | NaVILA 주석 읽기, 프레임 선택, 검증 분리, 정렬 과제, collate |
 | `lightnav/tasks.py` | 보조 과제 샘플: 짝 맞추기, ScanQA 4지선다 (4.1절) |
+| `lightnav/teacher.py` | 교사 점수 계산: 프롬프트 한 번 + 답 10개를 캐시 위에서 함께 계산, NaVILA 답 해석 |
+| `scripts/make_split.py`, `splits/val_scenes.json` | 장면 단위 검증 분리와 그 결과 (4절) |
+| `requirements/student.txt` | 서버 학생 환경 패키지 |
 | `scripts/extract_scanqa_frames.py` | ScanQA 영상에서 8장을 한 번 뽑아 jpg로 저장 |
 | `lightnav/agent.py` | 추론 래퍼(영상 특징 캐시) |
 | `lightnav/server.py` | 학생 프로세스(평가 루프와 Go2가 호출) |
@@ -253,12 +256,12 @@ p = softmax(logits / T)            # T는 보정 전에는 1
 
 - R2R과 RxR의 주석과 프레임을 쓴다.
 - **영어 지시문만 쓴다.** ModernBERT-large와 Laya 영어 체크포인트는 영어 전용이다. RxR의 비영어 지시문(`PLAN.md` 3절 기준 435개)은 뺀다.
-- **검증 분리는 장면 단위다.** `video_id` 앞 숫자가 VLN-CE 에피소드 번호로 보인다(R2R 에피소드 10,819개가 R2R-CE train 수와 같다). VLN-CE `train.json.gz`에서 장면을 찾아 약 5%를 검증으로 뺀다. 이 대응은 아직 대조하지 않았다.
-  - **지금 코드의 한계 (2026-11-12 확인)**
-    - `scripts/train.py`는 R2R만 장면 단위로 나눌 수 있다(`--r2r_scenes`).
-    - RxR은 항상 에피소드 단위로 나뉜다. 그래서 RxR 검증 샘플이 학습에 쓴 집에서도 나오고, 처음 보는 집에서의 정확도가 높게 잡힌다.
-    - 서버 학습 전에 고친다. RxR-CE 에피소드 파일(`RxR_VLNCE_v0/train/train_guide.json.gz`)에서 장면을 찾게 한다.
-  - R2R도 `--r2r_scenes`를 주지 않으면 에피소드 단위다. 이 파일은 아직 이 PC에도 서버에도 없다.
+- **검증 분리는 장면 단위다.** 2026-11-12에 `splits/val_scenes.json`으로 만들었고, 모든 실험이 이 파일을 함께 쓴다.
+  - **R2R**: `video_id` 앞 숫자는 VLN-CE R2R의 `episode_id`다. `train.json.gz`의 10,819개와 번호, 지시문 문장이 모두 같다.
+  - **RxR**: NaVILA는 RxR 에피소드에 자체 번호를 붙였다. 같은 번호의 RxR `instruction_id`는 다른 지시문이다. 그래서 공개된 원본 RxR 지시문 파일(`rxr_train_guide.jsonl.gz`)과 지시문 문장으로 대조한다(`rxr_episode_scenes`). 6,660개가 모두 장면 하나에 대응한다.
+  - **두 데이터를 함께 나눈다**: R2R과 RxR은 같은 MP3D 학습 장면을 쓴다. 따로 뽑으면 한쪽의 검증 장면이 다른 쪽 학습에 들어가므로, 두 데이터에서 같은 장면을 뺀다(`make_val_split`).
+  - **결과**: 장면 61개 중 3개(`S9hNv5qa7GM`, `mJXqzFtmKg4`, `rPc6DW4iMge`)를 뺐다. 에피소드 기준으로 R2R 744/10,819개, RxR 469/6,654개(영어만)가 검증이다.
+  - 다시 만들 때는 `scripts/make_split.py`를 쓴다. 분리 파일이 git에 있으므로 서버에는 VLN-CE 파일이 필요 없다.
 - 검증 지표는 복제를 뺀 고유 샘플로 계산한다. 분리를 에피소드 단위로 하므로 복제가 학습과 검증에 나뉘어 들어가지는 않는다.
 - 분리 결과(검증 에피소드 목록)는 파일로 저장하고 모든 실험이 같은 파일을 읽는다.
 - **좌우 반전**: 이미지를 좌우로 뒤집고, 지시문의 left와 right를 바꾸고(`mirror_instruction`), 정답의 `turn left X`와 `turn right X`를 바꾼다.
@@ -360,6 +363,19 @@ p = softmax(logits / T)            # T는 보정 전에는 1
 - 손질하지 않은 영어 체크포인트도 글만으로 방향을 읽는다. "Turn left and walk to the sofa."에 좌회전 3개가 상위 3개였고, "You have arrived. Stop here."에 정지가 1.00이었다.
 - `R2R/train_sample`의 에피소드 5966은 프레임이 빠져 있다. `--only_available`이 걸러 낸다(215개 사용).
 
+**진행 상황 (2026-11-12)**
+
+- **서버용 코드**: `scripts/server/`(순서는 그 폴더의 README)
+  - 환경 2개: 학생 `lightnav`, 교사 `navila`
+  - 데이터 받기, 확인
+  - 교사 라벨: 1,000개 확인, 전체 병렬 실행
+  - 학습: N1, N2, N4, N5
+- **교사 라벨 추출** `scripts/extract_teacher_probs.py`
+  - 이 PC에서는 NaVILA 대신 가짜 모듈과 작은 llama로 끝까지 확인했다: 저장, 이어서 하기, 병합, 빠진 프레임 처리.
+  - 실제 8B로는 서버의 `teacher_check.sh`가 확인한다. 처음 20개는 `model.generate` 결과와 점수 1순위가 같은지 비교한다.
+- **검증 분리**: 장면 단위로 고쳤다(4절).
+- **테스트**: 39개 통과, 1개 건너뜀(새로 9개: 교사 점수 계산과 추출 전체 과정 6개, 검증 분리 3개).
+
 **G1이나 G2가 11/13까지 통과하지 못하면 `PLAN.md` 4절의 학생(mmBERT-base, `laya_base` 기반)으로 돌아간다.** G3는 어느 학생이든 필요하므로 그대로 진행한다.
 
 ### 5.2 실행 목록
@@ -415,7 +431,7 @@ Laya는 영상 토큰을 본 적이 없으므로, 투영층과 프레임·위치
 - NaVILA 평가 루프 `navila_trainer.py`를 쓰고, 8B 호출 자리에서 학생 프로세스(`lightnav/server.py`)를 부른다.
   - 요청: 지시문, 이미지 8장(`sample_and_pad_images` 결과), 실제 프레임 수
   - 응답: `ANSWERS` 중 한 문장, 확률 10개, 걸린 시간(ms)
-- **정답 재생 확인(G3)**: 학생 대신 정답 행동을 3개까지 묶어 문장으로 돌려주는 가짜 학생을 붙인다. R2R val_unseen 50 에피소드에서 SR 95% 이상이어야 한다. 정답 행동은 VLN-CE의 `val_unseen_gt.json.gz`에 있는 것으로 기억한다.
+- **정답 재생 확인(G3)**: 학생 대신 정답 행동을 3개까지 묶어 문장으로 돌려주는 가짜 학생을 붙인다. R2R val_unseen 50 에피소드에서 SR 95% 이상이어야 한다. 정답 행동은 VLN-CE의 `val_unseen_gt.json.gz`에 있다(`actions`, 1,839개, 2026-11-12 확인).
 - Habitat 0.1.7 빌드가 안 될 때의 대안은 정해지지 않았다(11절).
 - 지표: SR, SPL, NE, OS, 판단 1회 시간(ms), 에피소드당 판단 횟수, GPU 메모리, 파라미터 수.
 
@@ -521,9 +537,7 @@ QUESTIONS_3 = {
 **확인하지 못한 것**
 
 - 1.3절의 Laya 내용 전부와 `rl_agent_config.json` 값. G1에서 확인한다.
-- `video_id`의 에피소드 번호가 VLN-CE train 에피소드 번호와 같은지. RxR도 RxR-CE `train_guide.json.gz`의 에피소드 번호와 같은지.
 - 랜드마크 추출(`split_instruction`, `landmark`)이 RxR의 긴 지시문에서도 쓸 만한 물체 이름을 뽑는지.
-- VLN-CE `val_unseen_gt.json.gz`에 저수준 정답 행동이 들어 있는지.
 - ModernBERT는 층 3개마다 전역 attention이고 나머지는 국소 attention(창 128토큰)인 것으로 기억한다. 선택지는 열의 앞, 영상은 뒤에 있어서 전역 층에서만 서로를 본다. 성능이 낮으면 먼저 의심할 곳이다.
 - Laya 체크포인트는 `max_len` 512로 학습됐고 이 설계의 열은 약 990토큰이다. 더 긴 열에서 문제가 없는지는 돌려 봐야 안다.
 - Laya 체크포인트에서 시작하는 것이 이득이라는 보장은 없다. 영상 토큰은 Laya가 학습한 분포 밖이다. N2가 이것을 가른다.

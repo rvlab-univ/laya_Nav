@@ -153,25 +153,80 @@ def episode_scenes(path: str) -> Dict[str, str]:
     return {str(e["episode_id"]): os.path.basename(e["scene_id"]).split(".")[0] for e in data["episodes"]}
 
 
+def _text_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def rxr_episode_scenes(guide_path: str, rows: Sequence[Row]) -> Dict[str, str]:
+    """`episode -> scene` for NaVILA's RxR rows, from the original RxR guide file (`rxr_train_guide.jsonl.gz`,
+    public at storage.googleapis.com/rxr-data).
+
+    NaVILA numbers RxR episodes differently from RxR's `instruction_id`, so episodes are matched by their instruction
+    text (case and punctuation ignored). Raises KeyError for an episode whose text is missing from the file or belongs
+    to more than one scene."""
+    opener = gzip.open if guide_path.endswith(".gz") else open
+    scans: Dict[str, Set[str]] = {}
+    with opener(guide_path, "rt") as f:
+        for line in f:
+            x = json.loads(line)
+            scans.setdefault(_text_key(x["instruction"]), set()).add(x["scan"])
+    out, bad = {}, []
+    for r in rows:
+        if r.episode in out:
+            continue
+        found = scans.get(_text_key(r.instruction), set())
+        if len(found) == 1:
+            out[r.episode] = next(iter(found))
+        else:
+            bad.append(r.episode)
+    if bad:
+        raise KeyError("%d RxR episode(s) match no single scene by instruction text, e.g. %s" % (len(bad), bad[:3]))
+    return out
+
+
+def choose_val_scenes(scenes: Sequence[str], frac: float = 0.05, seed: int = 0) -> Set[str]:
+    """About `frac` of the scenes. Depends only on the arguments, so every run holds out the same scenes."""
+    names = sorted(set(scenes))
+    return set(random.Random(seed).sample(names, max(1, round(len(names) * frac))))
+
+
 def choose_val_episodes(episodes: Sequence[str], scenes: Optional[Dict[str, str]] = None,
                         frac: float = 0.05, seed: int = 0) -> Set[str]:
     """Validation episodes: whole scenes when `scenes` is given (about `frac` of the scenes), else about
     `frac` of the episodes. Depends only on the arguments, so every run holds out the same episodes."""
     episodes = sorted(set(episodes))
-    rng = random.Random(seed)
     if scenes is None:
-        return set(rng.sample(episodes, max(1, round(len(episodes) * frac))))
+        return set(random.Random(seed).sample(episodes, max(1, round(len(episodes) * frac))))
     missing = [e for e in episodes if e not in scenes]
     if missing:
         raise KeyError("%d episode(s) have no scene, e.g. %s" % (len(missing), missing[:3]))
-    names = sorted({scenes[e] for e in episodes})
-    held = set(rng.sample(names, max(1, round(len(names) * frac))))
+    held = choose_val_scenes([scenes[e] for e in episodes], frac, seed)
     return {e for e in episodes if scenes[e] in held}
 
 
-def save_split(path: str, val: Dict[str, Set[str]], mode: str) -> None:
+def make_val_split(episodes: Dict[str, Sequence[str]], scenes: Dict[str, Optional[Dict[str, str]]],
+                   frac: float = 0.05, seed: int = 0):
+    """`(validation episodes per source, held-out scenes or None)`.
+
+    With scenes for every source, one set of scenes is held out of all of them: R2R and RxR share the MP3D training
+    scenes, so choosing per source would put one source's validation scenes into the other's training data.
+    Without scenes for every source, each source is split on its own (`choose_val_episodes`)."""
+    if episodes and all(scenes.get(n) for n in episodes):
+        for n, eps in episodes.items():
+            missing = sorted({e for e in eps if e not in scenes[n]})
+            if missing:
+                raise KeyError("%s: %d episode(s) have no scene, e.g. %s" % (n, len(missing), missing[:3]))
+        held = choose_val_scenes([scenes[n][e] for n, eps in episodes.items() for e in eps], frac, seed)
+        return {n: {e for e in eps if scenes[n][e] in held} for n, eps in episodes.items()}, held
+    return {n: choose_val_episodes(eps, scenes.get(n), frac, seed) for n, eps in episodes.items()}, None
+
+
+def save_split(path: str, val: Dict[str, Set[str]], mode: str, held_scenes: Optional[Set[str]] = None) -> None:
+    out = {"mode": mode, "val_episodes": {k: sorted(v) for k, v in val.items()}}
+    if held_scenes is not None:
+        out["held_scenes"] = sorted(held_scenes)
     with open(path, "w") as f:
-        json.dump({"mode": mode, "val_episodes": {k: sorted(v) for k, v in val.items()}}, f)
+        json.dump(out, f)
 
 
 def load_split(path: str) -> Dict[str, Set[str]]:

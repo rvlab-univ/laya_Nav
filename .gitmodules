@@ -1,6 +1,7 @@
 [submodule "NaVILA"]
 	path = NaVILA
 	url = https://github.com/AnjieCheng/NaVILA
+	ignore = untracked
 [submodule "third_party/laya_src"]
 	path = third_party/laya_src
 	url = https://github.com/NandhaKishorM/laya
