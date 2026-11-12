@@ -271,7 +271,7 @@ p = softmax(logits / T)            # T는 보정 전에는 1
 
 - **출처**: NaVILA R2R·RxR 주석. 각 에피소드의 마지막 판단(정지) 샘플이 경로 전체 프레임 목록을 갖고 있다.
 - **입력**: 경로 전체에서 NaVILA 규칙(1.2절)으로 고른 8장 + 상태 `{"instruction": 지시문}`
-- **질문**: `"Does the instruction describe this route?"`, 선택지 2개
+- **질문**: `"Does the instruction describe this route?"`, 선택지 2개. 질문과 선택지는 합쳐 30토큰이다(2026-11-12, 실제 토크나이저).
   - `yes: the instruction describes this route`
   - `no: the instruction describes a different route`
 - **짝 비율**: 진짜 짝 절반, 가짜 짝 절반
@@ -297,12 +297,17 @@ p = softmax(logits / T)            # T는 보정 전에는 1
   - 학습 전에 `scripts/extract_scanqa_frames.py`로 한 번 뽑아 jpg로 저장한다. 학습 중에는 영상을 디코딩하지 않는다.
 - **질문과 상태**
   - 질문 문장은 `Answer briefly.`를 지우고 Laya 질문 자리(`instructions`)에 넣는다. 짧고, Laya가 원래 학습한 형태다.
-  - 상태를 비워도 `build_sequence`가 동작하는지 먼저 확인한다. 안 되면 `{"source": "room scan"}` 같은 짧은 고정 문구를 넣는다.
+  - 상태는 비운다. `build_sequence`는 빈 상태를 `{}`(2토큰)로 넣고 정상 동작한다(2026-11-12 확인).
+  - 예시 문항 "What color is the chair in the kitchen?"은 질문과 선택지 4개를 합쳐 32토큰이다.
 - **선택지 4개**: 정답 1개 + 오답 3개
   - 오답은 같은 장면, 같은 질문 유형(what, where, color, how many, 기타)의 다른 문항 정답에서 뽑는다.
   - 모자라면 다른 장면의 같은 유형에서 채운다.
   - 유형을 맞추지 않으면 "무슨 색?"에 위치나 개수가 오답으로 붙어, 영상을 보지 않고 답 형태만으로 풀린다.
-  - 정답 목록과 겹치는 오답은 뺀다(대소문자와 관사는 무시하고 비교).
+  - 정답 목록과 겹치는 오답은 뺀다.
+  - **오답끼리도 겹치지 않게 한다.**
+    - 비교 전에 대소문자, 관사, 철자 변형(grey/gray, colour/color 등)을 맞춘다.
+    - 예: 검증 문항 "What color is the chair in the kitchen?"(정답 dark brown, brown)에 같은 장면·같은 유형 규칙만 쓰면 오답이 black, grey, gray로 뽑혔다. 그러면 grey와 gray가 사실상 같은 선택지가 된다(2026-11-12 확인).
+  - 정답과 한쪽이 다른 쪽을 포함하는 오답(정답 dark brown에 오답 brown)도 뺀다. 맞는지 틀리는지 애매하기 때문이다.
   - 정답이 여러 개면 하나를 선택지로 쓰고, 나머지는 오답 후보에서 뺀다.
   - 선택지 순서는 샘플마다 섞는다.
 - **검증**: ScanQA val 4,675문항을 같은 방식으로 바꾼다. 오답과 순서는 seed로 고정한다.
@@ -490,7 +495,7 @@ QUESTIONS_3 = {
 8. 정렬 단계에서 Laya와 SigLIP2의 파라미터에 기울기가 없음.
 9. 정렬 과제 (가)의 라벨이 앞 판단의 답 문장과 맞음.
 10. 짝 맞추기: 랜드마크 교체 지시문이 원래 지시문과 물체 하나만 다르고, 구조물 단어는 바뀌지 않음. 검증 에피소드의 지시문이 학습 가짜 짝에 쓰이지 않음.
-11. ScanQA 4지선다: 오답이 정답 목록과 겹치지 않고 같은 질문 유형에서 나옴. 순서를 섞어도 정답 번호가 맞음. `Answer briefly.`가 지워짐.
+11. ScanQA 4지선다: 오답이 정답 목록과 겹치지 않고 같은 질문 유형에서 나옴. 오답끼리 철자 변형(grey/gray)으로 겹치지 않고, 정답을 포함하거나 정답에 포함되는 오답이 없음. 순서를 섞어도 정답 번호가 맞음. `Answer briefly.`가 지워짐.
 12. 선택지 수가 다른 샘플(10, 2, 4)을 한 배치에 넣었을 때 빈 선택지의 logits가 막히고 손실에 들어가지 않음.
 13. 내비게이션 지표가 내비게이션 샘플로만 계산됨.
 14. RxR 검증 분리가 장면 단위로 됨(RxR-CE 에피소드 파일을 줄 때).
@@ -517,7 +522,6 @@ QUESTIONS_3 = {
 
 - 1.3절의 Laya 내용 전부와 `rl_agent_config.json` 값. G1에서 확인한다.
 - `video_id`의 에피소드 번호가 VLN-CE train 에피소드 번호와 같은지. RxR도 RxR-CE `train_guide.json.gz`의 에피소드 번호와 같은지.
-- `build_sequence`가 빈 상태를 받는지(4.1절 (B)).
 - 랜드마크 추출(`split_instruction`, `landmark`)이 RxR의 긴 지시문에서도 쓸 만한 물체 이름을 뽑는지.
 - VLN-CE `val_unseen_gt.json.gz`에 저수준 정답 행동이 들어 있는지.
 - ModernBERT는 층 3개마다 전역 attention이고 나머지는 국소 attention(창 128토큰)인 것으로 기억한다. 선택지는 열의 앞, 영상은 뒤에 있어서 전역 층에서만 서로를 본다. 성능이 낮으면 먼저 의심할 곳이다.
