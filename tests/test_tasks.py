@@ -141,3 +141,51 @@ def test_shuffled_text_moves_every_instruction():
                                   "Go up the stairs and stop in front of the TV."])
 def test_real_looking_instructions_have_landmarks(text):
     assert T.landmarks(text)
+
+
+def test_other_instruction_skips_episodes_of_the_same_path(tok, tmp_path):
+    rows, _ = write_episodes(tmp_path, EPISODES)
+    other = T.OtherInstruction(T.routes_from_rows(rows))
+    rng = random.Random(0)
+    row = next(r for r in rows if r.episode == "1")
+    got = {other(row, rng) for _ in range(60)}
+    assert got == {EPISODES["3"][0], EPISODES["4"][0]}         # never episode 2: same path, other words
+
+
+def _train_module():
+    import importlib.util
+    import os
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "train.py")
+    spec = importlib.util.spec_from_file_location("lightnav_train_test", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_contrast_pass_reuses_the_right_frames(tok, tmp_path):
+    """With the own instruction as the 'other' one, the second pass must give exactly the first pass's logits."""
+    rows, roots = write_episodes(tmp_path, EPISODES)
+    model = tiny_model(tok).eval()
+    cfg = model.cfg
+    same = NavDataset(rows, roots, tok, cfg, negative=lambda r, rng: r.instruction, negative_prob=1.0)
+    match = T.MatchDataset(T.routes_from_rows(rows), roots, tok, cfg, fixed=True)
+    batch = collate([same[0], match[1], same[5], same[3]], tok.pad_token_id)
+    assert batch["neg_rows"].tolist() == [0, 2, 3]
+    train = _train_module()
+    with torch.no_grad():
+        feats = model.encode_frames(batch["pixels"])
+        logits = model(batch, feats=feats)
+        loss, gap = train.contrast_loss(model, batch, feats, logits, margin=0.5)
+    assert abs(gap) < 1e-4 and abs(float(loss) - 0.5) < 1e-4
+
+    other = T.OtherInstruction(T.routes_from_rows(rows))
+    ds = NavDataset(rows, roots, tok, cfg, negative=other, negative_prob=1.0)
+    batch = collate([ds[0], ds[4]], tok.pad_token_id)
+    model.train()
+    feats = model.encode_frames(batch["pixels"])
+    logits = model(batch, feats=feats)
+    loss, gap = train.contrast_loss(model, batch, feats, logits, margin=0.5)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert batch["neg_input_ids"].shape[0] == 2
+    assert "sofa" in tok.decode(batch["input_ids"][0]) and "sofa" not in tok.decode(batch["neg_input_ids"][0])

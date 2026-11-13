@@ -46,6 +46,12 @@ def parse_args():
     p.add_argument("--match_frac", type=float, default=0.0,
                    help="share of instruction-route matching samples in training (design B 4.1 (A)); 0 = none")
     p.add_argument("--match_swap", type=float, default=0.6, help="share of landmark swaps among matching negatives")
+    p.add_argument("--contrast", type=float, default=0.0,
+                   help="weight of the instruction contrast loss: the label must be more likely with the sample's "
+                        "own instruction than with another path's, by --contrast_margin nats; 0 = off")
+    p.add_argument("--contrast_margin", type=float, default=0.5)
+    p.add_argument("--contrast_prob", type=float, default=0.5,
+                   help="share of navigation samples that also run with another path's instruction")
     p.add_argument("--loss", choices=("rlcd", "soft-ce"), default="rlcd")
     p.add_argument("--epochs", type=float, default=2.0)
     p.add_argument("--max_steps", type=int, default=None, help="optimizer steps; overrides --epochs")
@@ -141,6 +147,25 @@ def shuffled_text(rows):
     return [r._replace(instruction=rows[(i + k) % len(rows)].instruction) for i, r in enumerate(rows)]
 
 
+def contrast_loss(model, batch, feats, logits, margin):
+    """Hinge on log p(target | own instruction) - log p(target | another path's instruction) for the rows in
+    batch["neg_rows"] (same frames, so the vision features are reused). Returns (loss, mean gap)."""
+    rows = batch["neg_rows"]
+    owner = batch["frame_owner"]
+    keep = torch.isin(owner, rows)
+    remap = torch.full((logits.size(0),), -1, dtype=torch.long, device=owner.device)
+    remap[rows] = torch.arange(len(rows), device=owner.device)
+    neg = {"input_ids": batch["neg_input_ids"], "text_len": batch["neg_text_len"],
+           "marker_pos": batch["neg_marker_pos"], "marker_mask": batch["neg_marker_pos"] >= 0,
+           "frame_owner": remap[owner[keep]], "frame_slot": batch["frame_slot"][keep]}
+    neg_logits = model(neg, feats=feats[keep])
+    target = batch["target"][rows]
+    lp_own = (target * torch.log_softmax(logits[rows], -1)).sum(-1)
+    lp_neg = (target * torch.log_softmax(neg_logits, -1)).sum(-1)
+    gap = lp_own - lp_neg
+    return torch.relu(margin - gap).mean(), float(gap.detach().mean())
+
+
 def to_device(batch, device):
     return {k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
 
@@ -171,8 +196,9 @@ def main():
 
     train_rows, val_rows, roots = load_data(args)
     teacher = D.TeacherStore(args.teacher) if args.teacher else None
+    negative = T.OtherInstruction(T.routes_from_rows(train_rows)) if args.contrast > 0 else None
     train_set = D.NavDataset(train_rows, roots, tok, cfg, augment=True, mirror_prob=args.mirror,
-                             teacher=teacher, alpha=args.alpha)
+                             teacher=teacher, alpha=args.alpha, negative=negative, negative_prob=args.contrast_prob)
     match_val = None
     if args.match_frac > 0:
         train_routes, val_routes = T.routes_from_rows(train_rows), T.routes_from_rows(val_rows)
@@ -221,18 +247,27 @@ def main():
     params = [p for g in opt.param_groups for p in g["params"]]
     log = open(os.path.join(args.out, "log.jsonl"), "a")
     running, seen, started = 0.0, 0, time.time()
+    c_run = [0.0, 0.0, 0]          # contrast loss, gap (nats), batches
     opt.zero_grad(set_to_none=True)
     while step < total:
         for i, batch in enumerate(train_loader):
             batch = to_device(batch, device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                logits = model(batch)
+                feats = model.encode_frames(batch["pixels"])
+                logits = model(batch, feats=feats)
             mask = batch["marker_mask"]
             if args.loss == "rlcd":
                 frac = step / max(1, total - 1)
                 loss = rlcd_loss(logits, batch["target"], mask, qtype, args.sigma[0] + (args.sigma[1] - args.sigma[0]) * frac)
             else:
                 loss = soft_ce_loss(logits, batch["target"], mask)
+            if args.contrast > 0 and "neg_rows" in batch:
+                with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                    c_loss, c_gap = contrast_loss(model, batch, feats, logits, args.contrast_margin)
+                loss = loss + args.contrast * c_loss
+                c_run[0] += float(c_loss.detach())
+                c_run[1] += c_gap
+                c_run[2] += 1
             (loss / args.grad_accum).backward()
             running += float(-(batch["target"] * torch.log_softmax(logits.detach(), -1)).sum(-1).mean())
             seen += 1
@@ -249,6 +284,9 @@ def main():
             if step % args.log_every == 0:
                 rate = (time.time() - started) / (seen / args.grad_accum)
                 rec = {"step": step, "ce": running / seen, "lr_scale": scale, "sec_per_step": rate}
+                if c_run[2]:
+                    rec["contrast"], rec["contrast_gap"] = c_run[0] / c_run[2], c_run[1] / c_run[2]
+                    c_run = [0.0, 0.0, 0]
                 print(json.dumps(rec), flush=True)
                 log.write(json.dumps(rec) + "\n")
                 log.flush()

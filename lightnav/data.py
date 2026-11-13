@@ -8,7 +8,7 @@ import json
 import os
 import random
 import re
-from typing import Dict, List, NamedTuple, Optional, Sequence, Set
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Set
 
 import numpy as np
 import torch
@@ -300,11 +300,16 @@ class NavDataset(Dataset):
     """Decision samples: up to 8 frames (black padding left out), the text half of the sequence, a target."""
 
     def __init__(self, rows: Sequence[Row], image_roots: Dict[str, str], tok, cfg, augment: bool = False,
-                 mirror_prob: float = 0.0, teacher: Optional[TeacherStore] = None, alpha: float = 0.5):
+                 mirror_prob: float = 0.0, teacher: Optional[TeacherStore] = None, alpha: float = 0.5,
+                 negative: Optional[Callable[[Row, random.Random], Optional[str]]] = None,
+                 negative_prob: float = 0.0):
+        """`negative(row, rng)`, when given, returns another path's instruction; with probability `negative_prob`
+        a sample also carries it ("neg_ids", "neg_markers") for the instruction contrast loss of scripts/train.py."""
         from laya.train import to_internal
 
         self.rows, self.image_roots, self.tok, self.cfg = list(rows), image_roots, tok, cfg
         self.mirror_prob, self.teacher, self.alpha = mirror_prob, teacher, alpha
+        self.negative, self.negative_prob = negative, negative_prob
         self.transform = make_image_transform(cfg.image_size, cfg.image_mean, cfg.image_std, augment)
         self.question = to_internal("action", QUESTION)
 
@@ -328,9 +333,17 @@ class NavDataset(Dataset):
         pixels, slots = load_frames(self.image_roots[r.source], r.prefix, r.n_frames, self.transform,
                                     self.cfg.num_frames, flip)
         ids, markers = self.encode_text(instruction)
-        return {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots,
-                "target": target_distribution(label, teacher, self.alpha), "label": label, "key": r.key,
-                "mirrored": flip}
+        out = {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots,
+               "target": target_distribution(label, teacher, self.alpha), "label": label, "key": r.key,
+               "mirrored": flip}
+        if self.negative is not None and self.negative_prob > 0 and random.random() < self.negative_prob:
+            rng = random.Random(random.getrandbits(64))
+            neg = self.negative(r, rng)
+            if neg is not None:
+                if flip:                                  # the scene is mirrored; so is the other instruction
+                    neg = mirror_instruction(neg) or neg
+                out["neg_ids"], out["neg_markers"] = self.encode_text(neg)
+        return out
 
 
 def encode_text(tok, question: Dict, instruction: str, max_len: int, head_max_len: int):
@@ -374,6 +387,19 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
         "frame_owner": torch.tensor([i for i, b in enumerate(batch) for _ in b["slots"]], dtype=torch.long),
         "frame_slot": torch.tensor([s for b in batch for s in b["slots"]], dtype=torch.long),
     }
+    neg = [i for i, b in enumerate(batch) if "neg_ids" in b]
+    if neg:
+        # the same samples with another path's instruction, for the rows in neg_rows (same frames)
+        m = max(len(batch[i]["neg_ids"]) for i in neg)
+        out["neg_input_ids"] = torch.full((len(neg), m), pad_id, dtype=torch.long)
+        out["neg_text_len"] = torch.zeros(len(neg), dtype=torch.long)
+        out["neg_marker_pos"] = torch.full((len(neg), NUM_ACTIONS), -1, dtype=torch.long)
+        for j, i in enumerate(neg):
+            out["neg_input_ids"][j, :len(batch[i]["neg_ids"])] = torch.tensor(batch[i]["neg_ids"], dtype=torch.long)
+            out["neg_text_len"][j] = len(batch[i]["neg_ids"])
+            out["neg_marker_pos"][j, :len(batch[i]["neg_markers"])] = torch.tensor(batch[i]["neg_markers"],
+                                                                                 dtype=torch.long)
+        out["neg_rows"] = torch.tensor(neg, dtype=torch.long)
     if "target" in batch[0]:
         out["target"] = torch.from_numpy(np.stack([b["target"] for b in batch]))
         out["label"] = torch.tensor([b["label"] for b in batch], dtype=torch.long)

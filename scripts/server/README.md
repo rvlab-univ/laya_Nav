@@ -99,6 +99,20 @@ nohup bash scripts/server/train.sh B > logs/B.log 2>&1 &     # A + 교사 분포
 - `MATCH`(짝 맞추기 비율, 기본 0.2), `STEPS`(기본 16000), `ALPHA`(기본 0.5)로 바꿀 수 있다.
 - `status.sh`가 검증마다 "same answer with another instruction"을 보여 준다. 0.9 이상이면 지시문을 읽지 않는 것이다.
 
+**A의 첫 검증 뒤 (2026-11-13, 설계 B 7.2.2절)**: A도 지시문을 읽지 않았다(같은 답 0.96, 짝 맞추기 0.50).
+
+```bash
+bash scripts/server/teacher_signal.sh                        # B가 도움이 될지: 같은 경로의 지시문끼리 NaVILA 분포 차이 (CPU, 몇 분)
+bash scripts/server/match_eval.sh A > logs/match_eval.log 2>&1   # A가 학습 경로의 짝 맞추기는 맞히는지 (GPU 약 4 GB)
+MATCH=0 nohup bash scripts/server/train.sh C > logs/C.log 2>&1 &   # 지시문 대조 손실 (CONTRAST, 기본 1.0), 짝 맞추기 없이
+```
+
+- A는 같은 step의 N2보다 정확도와 정지 재현율이 낮았고(4,000 step: 0.275 / 0.00 대 0.337 / 0.52), 짝 맞추기도 배우지 못했다. 그래서 C는 `MATCH=0`으로 돌린다.
+- C가 지시문을 쓰기 시작하는지는 `status.sh`의 `contrast gap`(20 step마다)으로 본다. 0보다 커지면 쓰기 시작한 것이다.
+
+- C는 A와 함께 올라가지 않는다(교사 라벨 2개 + A가 이미 약 104 GB). A를 멈춘 뒤에 시작한다.
+- 교사 분포까지 넣으려면: `NAME=BC nohup bash scripts/server/train.sh B --contrast 1.0 > logs/BC.log 2>&1 &`
+
 이전 계획:
 
 - N4(좌우 반전)는 N1·N2 다음이다. N2가 이기면 `START=none bash scripts/server/train.sh N4 …`로 돌린다.

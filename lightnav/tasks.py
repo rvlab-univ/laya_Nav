@@ -195,6 +195,27 @@ class MatchDataset(Dataset):
                 "kind": kind}
 
 
+class OtherInstruction:
+    """`(row, rng) -> instruction` of a random episode of the same source whose path differs from the row's: the
+    negative of the instruction contrast loss (scripts/train.py --contrast). Picklable, for DataLoader workers."""
+
+    def __init__(self, routes: Sequence[Route]):
+        self.path = {(r.source, r.episode): r.path for r in routes}
+        self.pool = defaultdict(list)
+        for r in routes:
+            self.pool[r.source].append((r.path, r.instruction))
+
+    def __call__(self, row: D.Row, rng: random.Random) -> Optional[str]:
+        pool, own = self.pool.get(row.source), self.path.get((row.source, row.episode))
+        if not pool:
+            return None
+        for _ in range(100):
+            path, text = pool[rng.randrange(len(pool))]
+            if path != own and text != row.instruction:
+                return text
+        return None
+
+
 class Mixed(Dataset):
     """Navigation samples followed by `aux` samples, `frac` of the whole; a shuffling DataLoader mixes them."""
 

@@ -34,7 +34,7 @@ print("== training")
 any_run = False
 for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
     name = os.path.basename(os.path.dirname(path))
-    train, val = None, None
+    train, val, vals = None, None, []
     with open(path) as f:
         for line in f:
             try:
@@ -45,6 +45,7 @@ for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
                 train = rec
             if "val" in rec:
                 val = rec
+                vals.append(rec)
     if train is None:
         continue
     any_run = True
@@ -57,6 +58,9 @@ for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
     else:
         where = "step %d, %.2f s/step" % (step, train["sec_per_step"])
     line = "%-12s %-8s %s | ce %.3f" % (name, state, where, train["ce"])
+    if train.get("contrast_gap") is not None:
+        # log p(label | own instruction) - log p(label | another path's): above 0 = the instruction is used
+        line += " | contrast gap %+.3f" % train["contrast_gap"]
     if val:
         v = val["val"]
         line += " | val acc %.3f, kind acc %.3f, stop recall %s (step %d)" % (
@@ -70,6 +74,15 @@ for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
         if m and m.get("acc") is not None:
             line += " | matching acc %.3f (true %s, swapped landmark %s, other episode %s)" % (
                 m["acc"], *("%.2f" % m[k] if m.get(k) is not None else "-" for k in ("acc_pos", "acc_swap", "acc_other")))
+        if len(vals) > 1:
+            # every validation so far: step, val acc, same-answer rate, matching acc
+            hist = []
+            for r in vals:
+                v, m = r["val"], r.get("val_match") or {}
+                hist.append("%d: %.3f/%s/%s" % (r["step"], v["acc"],
+                                                "%.2f" % v["text_same"] if v.get("text_same") is not None else "-",
+                                                "%.2f" % m["acc"] if m.get("acc") is not None else "-"))
+            line += "\n%-21s history (step: val acc/same answer/matching) %s" % ("", ", ".join(hist))
     print(line)
 if not any_run:
     print("no training logs yet")

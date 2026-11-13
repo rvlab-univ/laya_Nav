@@ -8,10 +8,12 @@
 # The reduced plan after the N1 / N2 diagnosis (design B 7.2.1: both ignore the instruction):
 #   A: ModernBERT-large start (N2 beat N1) + mirror 0.5 + matching (MATCH, default 0.2), STEPS (default 16000) steps
 #   B: A + teacher distribution (alpha ALPHA, default 0.5); needs runs/teacher from teacher_labels.sh
+#   C: A + instruction contrast loss (weight CONTRAST, default 1.0): the label must be likelier with the sample's
+#      own instruction than with another path's. B with it: NAME=BC bash scripts/server/train.sh B --contrast 1.0
 # Arguments after the run name go to scripts/train.py (e.g. --grad_checkpointing on out-of-memory, --batch 8).
 # NAME sets the output folder (default: the run name). All runs share the validation split splits/val_scenes.json.
 source "$(dirname "$0")/common.sh"
-RUN="${1:?usage: train.sh N1|N2|N4|N5|N7|A|B [train.py arguments]}"
+RUN="${1:?usage: train.sh N1|N2|N4|N5|N7|A|B|C [train.py arguments]}"
 shift
 
 if [ "${START:-english}" = none ]; then
@@ -33,6 +35,8 @@ case "$RUN" in
         [ -f "$TEACHER/teacher_probs.npy" ] || { echo "no teacher labels in $TEACHER (scripts/server/teacher_labels.sh)"; exit 1; }
         ARGS=(--laya none --encoder answerdotai/ModernBERT-large --mirror 0.5 --match_frac "${MATCH:-0.2}"
               --max_steps "${STEPS:-16000}" --teacher "$TEACHER" --alpha "${ALPHA:-0.5}") ;;
+    C)  ARGS=(--laya none --encoder answerdotai/ModernBERT-large --mirror 0.5 --match_frac "${MATCH:-0.2}"
+              --max_steps "${STEPS:-16000}" --contrast "${CONTRAST:-1.0}") ;;
     N3|N6|N8) echo "$RUN is not implemented yet (design B 5.3, 8 and 4.1 (B))"; exit 1 ;;
     *) echo "unknown run: $RUN"; exit 1 ;;
 esac
