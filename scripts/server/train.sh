@@ -10,10 +10,14 @@
 #   B: A + teacher distribution (alpha ALPHA, default 0.5); needs runs/teacher from teacher_labels.sh
 #   C: A + instruction contrast loss (weight CONTRAST, default 1.0): the label must be likelier with the sample's
 #      own instruction than with another path's. B with it: NAME=BC bash scripts/server/train.sh B --contrast 1.0
+#   D: C + landmark tags (design B 7.2.3): SigLIP2 names 10 landmarks of the current frame and 5 of each past frame,
+#      put after the instruction as words; vision encoder frozen so the tags stay aligned. Few image tokens (current
+#      frame 2 x 2, past frames 1 each; 539 tokens kept the encoder from learning to read the text). The first 200
+#      steps are separable matching samples, and a quarter of later matching samples stay separable. MATCH (0.2).
 # Arguments after the run name go to scripts/train.py (e.g. --grad_checkpointing on out-of-memory, --batch 8).
 # NAME sets the output folder (default: the run name). All runs share the validation split splits/val_scenes.json.
 source "$(dirname "$0")/common.sh"
-RUN="${1:?usage: train.sh N1|N2|N4|N5|N7|A|B|C [train.py arguments]}"
+RUN="${1:?usage: train.sh N1|N2|N4|N5|N7|A|B|C|D [train.py arguments]}"
 shift
 
 if [ "${START:-english}" = none ]; then
@@ -37,6 +41,9 @@ case "$RUN" in
               --max_steps "${STEPS:-16000}" --teacher "$TEACHER" --alpha "${ALPHA:-0.5}") ;;
     C)  ARGS=(--laya none --encoder answerdotai/ModernBERT-large --mirror 0.5 --match_frac "${MATCH:-0.2}"
               --max_steps "${STEPS:-16000}" --contrast "${CONTRAST:-1.0}") ;;
+    D)  ARGS=(--laya none --encoder answerdotai/ModernBERT-large --mirror 0.5 --match_frac "${MATCH:-0.2}"
+              --max_steps "${STEPS:-12000}" --contrast "${CONTRAST:-1.0}" --tags 10 5 --grids 2 1 --freeze_vision
+              --match_synth 0.25 --warm_steps "${WARM:-200}") ;;
     N3|N6|N8) echo "$RUN is not implemented yet (design B 5.3, 8 and 4.1 (B))"; exit 1 ;;
     *) echo "unknown run: $RUN"; exit 1 ;;
 esac

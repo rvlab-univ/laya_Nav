@@ -110,6 +110,18 @@ MATCH=0 nohup bash scripts/server/train.sh C > logs/C.log 2>&1 &   # 지시문 �
 - A는 같은 step의 N2보다 정확도와 정지 재현율이 낮았고(4,000 step: 0.275 / 0.00 대 0.337 / 0.52), 짝 맞추기도 배우지 못했다. 그래서 C는 `MATCH=0`으로 돌린다.
 - C가 지시문을 쓰기 시작하는지는 `status.sh`의 `contrast gap`(20 step마다)으로 본다. 0보다 커지면 쓰기 시작한 것이다.
 
+**실행 D (2026-11-13 밤, 설계 B 7.2.3절)**: 로컬 실험에서 영상 토큰 539개로는 지시문 비교를 배우지 못했고, 11개로는 배웠다.
+
+```bash
+pkill -u irteam -f "scripts/train.py --out /home/irteam/light_nav/runs/C "    # C를 멈춤 (같은 구조라 기대가 낮음)
+git pull
+nohup bash scripts/server/train.sh D > logs/D.log 2>&1 &
+```
+
+- 시작할 때 학습 프레임 4,000장으로 태그 통계를 잰다. 로그의 `most frequent tags`에 bedroom, bathroom 같은 단어가 보이면 정상이다.
+- 처음 200 step은 짝 맞추기 예열이다(손실 약 0.69). 그 뒤 `contrast gap`이 나온다.
+- 검증 2,000 step마다: 짝 맞추기가 0.5보다 오르는지, 같은 답 비율이 0.9보다 내려가는지, 정확도가 N2(2,000 step 0.300, 4,000 step 0.337)와 비슷한지 본다.
+
 - C는 A와 함께 올라가지 않는다(교사 라벨 2개 + A가 이미 약 104 GB). A를 멈춘 뒤에 시작한다.
 - 교사 분포까지 넣으려면: `NAME=BC nohup bash scripts/server/train.sh B --contrast 1.0 > logs/BC.log 2>&1 &`
 

@@ -63,6 +63,16 @@ _PATTERNS = {g: _pattern(g, w) for g, w in GROUPS.items()}
 assert not set(STRUCTURAL) & {w for ws in GROUPS.values() for w in ws}
 
 
+def phrase(group: str, word: str) -> str:
+    """The landmark as a tag phrase: "living" before "room" is "living room"."""
+    return word + " room" if group == "room_mod" else word
+
+
+def tag_phrases() -> List[str]:
+    """Every landmark phrase, the vocabulary of the student's tags (lightnav.model)."""
+    return [phrase(g, w) for g, words in GROUPS.items() for w in words]
+
+
 def landmarks(text: str) -> List[Tuple[str, str]]:
     """`(group, word)` of every swappable landmark in `text`, lower case, without repeats, in order."""
     out = []
@@ -129,14 +139,25 @@ class MatchDataset(Dataset):
     Training (`fixed=False`): index i shows route i % len(routes); positive or negative and the negative are drawn
     afresh each time. Validation (`fixed=True`): two samples per route, 2k positive and 2k + 1 negative, the same
     every time (`seed`). Negatives of kind "other" come from routes of the same source in `routes`.
+
+    `synthetic`: share of samples whose tag words (a model with tags, cfg.tag_vocab) are not what the frames show
+    but a separable stand-in: up to 3 landmarks of the shown instruction among random words for a positive, only
+    words the shown instruction does not mention for a negative ("tag_override"). Without this warm-up the student
+    never finds the comparison in the noisy real tags (design B 7.2.3).
     """
 
     def __init__(self, routes: Sequence[Route], image_roots: Dict[str, str], tok, cfg, fixed: bool = False,
-                 neg_frac: float = 0.5, swap_frac: float = 0.6, seed: int = 0):
+                 neg_frac: float = 0.5, swap_frac: float = 0.6, seed: int = 0, synthetic: float = 0.0,
+                 synthetic_words: int = 8):
         from laya.train import to_internal
 
         self.routes, self.image_roots, self.tok, self.cfg = list(routes), image_roots, tok, cfg
         self.fixed, self.neg_frac, self.swap_frac, self.seed = fixed, neg_frac, swap_frac, seed
+        self.synthetic, self.synthetic_words = synthetic, synthetic_words
+        vocab = list(getattr(cfg, "tag_vocab", None) or [])
+        if synthetic > 0 and not vocab:
+            raise ValueError("synthetic tags need a model with tags (cfg.tag_vocab)")
+        self.vocab_index = {p: i for i, p in enumerate(vocab)}
         self.question = to_internal("match", MATCH_QUESTION)
         self.transform = D.make_image_transform(cfg.image_size, cfg.image_mean, cfg.image_std, augment=not fixed)
         self.by_source = defaultdict(list)
@@ -182,6 +203,18 @@ class MatchDataset(Dataset):
             raise ValueError("only %d option markers fit" % len(markers))
         return ids, markers
 
+    def synthetic_tags(self, instruction: str, positive: bool, rng: random.Random) -> Optional[List[int]]:
+        """Vocabulary indices of the separable stand-in tags, or None when the instruction names no landmark."""
+        own = [self.vocab_index[p] for p in dict.fromkeys(phrase(g, w) for g, w in landmarks(instruction))
+               if p in self.vocab_index]
+        if not own:
+            return None
+        rest = [v for v in range(len(self.vocab_index)) if v not in set(own)]
+        words = (own[:3] if positive else []) + rng.sample(rest, self.synthetic_words - (min(3, len(own))
+                                                                                          if positive else 0))
+        rng.shuffle(words)
+        return words
+
     def __getitem__(self, i):
         route, instruction, kind = self.sample(i)
         pixels, slots = D.load_frames(self.image_roots[route.source], route.prefix, route.n_frames, self.transform,
@@ -190,9 +223,17 @@ class MatchDataset(Dataset):
         label = YES if kind == "pos" else NO
         target = np.zeros(NUM_ACTIONS, dtype=np.float32)
         target[label] = 1.0
-        return {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots, "target": target, "label": label,
-                "key": "match:%s:%s:%s" % (route.source, route.episode, kind), "mirrored": False, "task": "match",
-                "kind": kind}
+        out = {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots, "target": target, "label": label,
+               "key": "match:%s:%s:%s" % (route.source, route.episode, kind), "mirrored": False, "task": "match",
+               "kind": kind}
+        if self.synthetic > 0 and not self.fixed:
+            rng = random.Random(random.getrandbits(64))
+            if rng.random() < self.synthetic:
+                words = self.synthetic_tags(instruction, kind == "pos", rng)
+                if words is not None:
+                    out["tag_override"] = words
+                    out["key"] += ":synthetic"
+        return out
 
 
 class OtherInstruction:

@@ -41,11 +41,25 @@ def parse_args():
     p.add_argument("--laya", default="english", help="Laya checkpoint to start from; 'none' to use --encoder")
     p.add_argument("--encoder", default="answerdotai/ModernBERT-large")
     p.add_argument("--mirror", type=float, default=0.0, help="probability of a left-right mirrored sample")
+    p.add_argument("--tags", type=int, nargs=2, default=(0, 0), metavar=("CURRENT", "PAST"),
+                   help="landmark tags named by SigLIP2 for the current frame and for each past frame "
+                        "(lightnav.model, design B 7.2.3); 0 0 = none")
+    p.add_argument("--grids", type=int, nargs=2, default=(0, 7), metavar=("CURRENT", "PAST"),
+                   help="image tokens per frame as a grid side: current frame (0 = all 14 x 14 patches) and each "
+                        "past frame. Few tokens let the encoder learn to read the text (design B 7.2.3)")
+    p.add_argument("--freeze_vision", action="store_true",
+                   help="keep the vision encoder as SigLIP2 made it (tags stay aligned with its text table)")
     p.add_argument("--teacher", default=None, help="folder with keys.txt and teacher_probs.npy")
     p.add_argument("--alpha", type=float, default=0.5, help="weight of the teacher distribution in the target")
     p.add_argument("--match_frac", type=float, default=0.0,
                    help="share of instruction-route matching samples in training (design B 4.1 (A)); 0 = none")
     p.add_argument("--match_swap", type=float, default=0.6, help="share of landmark swaps among matching negatives")
+    p.add_argument("--match_synth", type=float, default=0.0,
+                   help="with tags: share of matching samples with separable stand-in tags (design B 7.2.3)")
+    p.add_argument("--warm_steps", type=int, default=0,
+                   help="with tags: first optimizer steps on separable matching samples only (design B 7.2.3)")
+    p.add_argument("--tag_stats_frames", type=int, default=4000,
+                   help="training frames that set the tag score statistics")
     p.add_argument("--contrast", type=float, default=0.0,
                    help="weight of the instruction contrast loss: the label must be more likely with the sample's "
                         "own instruction than with another path's, by --contrast_margin nats; 0 = off")
@@ -170,6 +184,34 @@ def to_device(batch, device):
     return {k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
 
 
+@torch.no_grad()
+def set_tag_stats(model, rows, roots, cfg, n, device, seed):
+    """Tag score statistics (mean and spread per phrase) from `n` random training frames."""
+    rng = np.random.default_rng(seed)
+    eps = list({(r.source, r.prefix): r for r in rows}.values())
+    transform = D.make_image_transform(cfg.image_size, cfg.image_mean, cfg.image_std)
+    from PIL import Image
+    picks = [eps[i] for i in rng.integers(len(eps), size=n)]
+    cos, chunk = [], []
+    model.eval()
+    for k, r in enumerate(picks):
+        f = int(rng.integers(r.n_frames))
+        with Image.open(os.path.join(roots[r.source], r.frame(f))) as im:
+            chunk.append(transform(im.convert("RGB")))
+        if len(chunk) == 64 or k + 1 == len(picks):
+            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
+                feats = model.encode_frames(torch.stack(chunk).to(device))
+                cos.append(model.tag_scores(feats, normalise=False).float())
+            chunk = []
+    model.train()
+    cos = torch.cat(cos)
+    model.set_tag_stats(cos)
+    top = torch.bincount(((cos - model.tag_mu) / model.tag_sd).topk(5, dim=-1).indices.flatten(),
+                         minlength=cos.size(1)).argsort(descending=True)[:8].tolist()
+    print("tag statistics from %d frames; most frequent tags: %s"
+          % (len(cos), ", ".join(cfg.tag_vocab[i] for i in top)), flush=True)
+
+
 def save_state(args, model, tok, opt, step):
     tmp, last = os.path.join(args.out, "last.tmp"), os.path.join(args.out, "last")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -185,14 +227,23 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    cfg = LayaNativeConfig(laya=None if args.laya == "none" else args.laya, encoder=args.encoder)
+    cfg = LayaNativeConfig(laya=None if args.laya == "none" else args.laya, encoder=args.encoder,
+                           tags_current=args.tags[0], tags_history=args.tags[1], cur_grid=args.grids[0],
+                           hist_grid=args.grids[1])
     model, tok = build(cfg)
     model.set_stage("nav")
+    if args.freeze_vision:
+        for q in model.vision.parameters():
+            q.requires_grad_(False)
     if args.grad_checkpointing:
         model.dm.encoder.gradient_checkpointing_enable()
         model.dm.head_checkpointing = True
     model.to(device).train()
-    print("parameters: %.1fM" % (sum(p.numel() for p in model.parameters()) / 1e6), flush=True)
+    print("parameters: %.1fM (%.1fM trained)%s" % (
+        sum(p.numel() for p in model.parameters()) / 1e6,
+        sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6,
+        ", tags: %d current, %d per past frame, %d phrases" % (cfg.tags_current, cfg.tags_history, len(cfg.tag_vocab))
+        if model.tagging else ""), flush=True)
 
     train_rows, val_rows, roots = load_data(args)
     teacher = D.TeacherStore(args.teacher) if args.teacher else None
@@ -202,7 +253,8 @@ def main():
     match_val = None
     if args.match_frac > 0:
         train_routes, val_routes = T.routes_from_rows(train_rows), T.routes_from_rows(val_rows)
-        match_train = T.MatchDataset(train_routes, roots, tok, cfg, swap_frac=args.match_swap)
+        match_train = T.MatchDataset(train_routes, roots, tok, cfg, swap_frac=args.match_swap,
+                                     synthetic=args.match_synth)
         train_set = T.Mixed(train_set, match_train, args.match_frac)
         if val_routes:
             match_val = T.MatchDataset(val_routes, roots, tok, cfg, fixed=True, swap_frac=args.match_swap)
@@ -213,6 +265,16 @@ def main():
     if len(val_rows) > args.val_max:
         val_rows = [val_rows[i] for i in sorted(np.random.default_rng(0).choice(len(val_rows), args.val_max, replace=False))]
     collate = lambda b: D.collate(b, tok.pad_token_id)                                   # noqa: E731
+    warm_loader = None
+    if model.tagging:
+        set_tag_stats(model, train_rows, roots, cfg, args.tag_stats_frames, device, args.seed)
+        if args.warm_steps > 0:
+            warm_set = T.MatchDataset(T.routes_from_rows(train_rows), roots, tok, cfg, swap_frac=args.match_swap,
+                                      synthetic=1.0)
+            warm_loader = DataLoader(warm_set, batch_size=args.batch, shuffle=True, drop_last=True,
+                                     collate_fn=collate, num_workers=args.workers, pin_memory=True)
+    elif args.warm_steps or args.match_synth:
+        raise SystemExit("--warm_steps and --match_synth need --tags")
     train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True, drop_last=True, collate_fn=collate,
                               num_workers=args.workers, pin_memory=True, persistent_workers=args.workers > 0)
     val_sets = {"nav": D.NavDataset(val_rows, roots, tok, cfg),
@@ -249,8 +311,19 @@ def main():
     running, seen, started = 0.0, 0, time.time()
     c_run = [0.0, 0.0, 0]          # contrast loss, gap (nats), batches
     opt.zero_grad(set_to_none=True)
-    while step < total:
-        for i, batch in enumerate(train_loader):
+    def batches():
+        """Training batches; the separable warm-up first (until step reaches --warm_steps)."""
+        while True:
+            warm = warm_loader is not None and step < args.warm_steps
+            for b in (warm_loader if warm else train_loader):
+                yield b
+                if warm and step >= args.warm_steps:
+                    break
+
+    if warm_loader is not None and step < args.warm_steps:
+        print("separable matching warm-up until step %d" % args.warm_steps, flush=True)
+    if step < total:
+        for i, batch in enumerate(batches()):
             batch = to_device(batch, device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 feats = model.encode_frames(batch["pixels"])

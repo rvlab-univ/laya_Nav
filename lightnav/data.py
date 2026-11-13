@@ -387,6 +387,13 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
         "frame_owner": torch.tensor([i for i, b in enumerate(batch) for _ in b["slots"]], dtype=torch.long),
         "frame_slot": torch.tensor([s for b in batch for s in b["slots"]], dtype=torch.long),
     }
+    if any("tag_override" in b for b in batch):
+        # stand-in tag words (vocabulary indices) for some rows; -1 = the row's own tags
+        k = max(len(b.get("tag_override", ())) for b in batch)
+        out["tag_override"] = torch.full((n, k), -1, dtype=torch.long)
+        for i, b in enumerate(batch):
+            if "tag_override" in b:
+                out["tag_override"][i, :len(b["tag_override"])] = torch.tensor(b["tag_override"], dtype=torch.long)
     neg = [i for i, b in enumerate(batch) if "neg_ids" in b]
     if neg:
         # the same samples with another path's instruction, for the rows in neg_rows (same frames)

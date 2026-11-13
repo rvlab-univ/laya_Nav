@@ -162,3 +162,19 @@ def test_forward_embeds_equals_laya_forward_on_the_real_checkpoint():
         want, _ = dm(*args)
         got = forward_embeds(dm, dm.encoder.get_input_embeddings()(args[0]), *args[1:])
     assert torch.allclose(got, want, atol=1e-4), (got - want).abs().max()
+
+
+def test_pooled_current_frame(tok):
+    from lightnav.model import LayaNative
+
+    base = tiny_model(tok)
+    cfg = base.cfg
+    cfg.cur_grid, cfg.hist_grid = 2, 1
+    model = LayaNative(cfg, base.dm, base.vision).eval()
+    batch = fake_batch(tok, model, INSTRUCTIONS[:1], n_frames=[12])
+    with torch.no_grad():
+        tokens = model.frame_tokens(model.encode_frames(batch["pixels"]), batch["frame_slot"])
+        logits = model(batch)
+    sizes = {s: t.shape[0] for s, t in zip(batch["frame_slot"].tolist(), tokens)}
+    assert sizes[7] == 4 and all(n == 1 for s, n in sizes.items() if s != 7)
+    assert logits.shape == (1, 10) and torch.isfinite(logits).all()
