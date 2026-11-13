@@ -1,6 +1,7 @@
 # 장비마다 따로 만드는 것 (git에 올리지 않음)
 env/
 env_vlnce/
+env_isaaclab/
 data/
 assets/
 runs/
@@ -18,3 +19,4 @@ checkpoints/
 __pycache__/
 *.pyc
 .pytest_cache/
+.cache/
