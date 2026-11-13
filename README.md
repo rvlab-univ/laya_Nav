@@ -10,8 +10,8 @@ NaVILA(8B VLA)의 판단 부분을 BERT 계열 비자기회귀 판단 모델(Lay
 
 | 경로 | 내용 |
 |---|---|
-| `lightnav/` | 학생 모델 패키지 (질문 정의, 데이터, 모델, 지표, 교사 점수 계산, 평가용 학생 프로세스) |
-| `scripts/` | 학습, 교사 라벨 추출(`extract_teacher_probs.py`), 검증 분리 만들기(`make_split.py`), VLN-CE 평가(`eval_vlnce.py`, `eval_summary.py`) |
+| `lightnav/` | 학생 모델 패키지 (질문 정의, 데이터, 모델, 지표, 짝 맞추기 과제, 교사 점수 계산, 평가용 학생 프로세스) |
+| `scripts/` | 학습, 교사 라벨 추출(`extract_teacher_probs.py`), 검증 분리 만들기(`make_split.py`), VLN-CE 평가(`eval_vlnce.py`, `eval_summary.py`), 절제 진단(`diagnose.py`) |
 | `scripts/eval/` | 이 PC의 VLN-CE 평가 환경 설치와 사용법. [scripts/eval/README.md](scripts/eval/README.md) |
 | `scripts/server/` | 서버(H200, 웹 터미널)용 실행 스크립트. 순서는 [scripts/server/README.md](scripts/server/README.md) |
 | `splits/val_scenes.json` | 모든 실험이 함께 쓰는 검증 분리 (MP3D 장면 61개 중 3개) |

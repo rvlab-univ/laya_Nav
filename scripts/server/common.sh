@@ -35,6 +35,31 @@ use_env() {
     conda activate "$1"
 }
 
+# CPU cores this container may use: the cgroup quota when there is one (nproc shows every core of the machine,
+# 128 on the server, while the quota can be far lower).
+cpu_quota() {
+    local q p
+    if [ -r /sys/fs/cgroup/cpu.max ]; then
+        read -r q p < /sys/fs/cgroup/cpu.max
+    elif [ -r /sys/fs/cgroup/cpu/cpu.cfs_quota_us ]; then
+        q="$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us)"; p="$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us)"
+    fi
+    if [ -n "$q" ] && [ "$q" != max ] && [ "$q" -gt 0 ] 2>/dev/null; then
+        echo $(( (q + p - 1) / p ))
+    else
+        nproc
+    fi
+}
+
+# Threads per process for torch / OpenMP / BLAS. Without this every process starts one thread per visible core,
+# and several processes inside a CPU quota keep pushing each other (and the thread feeding the GPU) off the CPU.
+limit_threads() {
+    local n="${1:-4}"
+    [ "$n" -ge 1 ] 2>/dev/null || n=1
+    export OMP_NUM_THREADS="$n" MKL_NUM_THREADS="$n" OPENBLAS_NUM_THREADS="$n" NUMEXPR_NUM_THREADS="$n"
+    export TOKENIZERS_PARALLELISM=false
+}
+
 gpu_report() {
     nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu --format=csv,noheader 2>/dev/null \
         || echo "nvidia-smi not available"

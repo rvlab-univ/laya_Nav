@@ -79,3 +79,16 @@ def decide(probs: Sequence[float], tau_stop: Optional[float] = None) -> int:
     if p[STOP] > tau_stop:
         return STOP
     return int(p[1:].argmax()) + 1
+
+
+# Auxiliary task (design B 4.1 (A)): does the instruction describe the route shown by the 8 frames?
+MATCH_QUESTION = {
+    "type": "choice",
+    "instructions": "Does the instruction describe this route?",
+    "criteria": {
+        "yes": "the instruction describes this route",
+        "no": "the instruction describes a different route",
+    },
+}
+MATCH_KEYS: List[str] = list(MATCH_QUESTION["criteria"])
+YES, NO = 0, 1

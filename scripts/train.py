@@ -20,6 +20,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from lightnav import data as D                                   # noqa: E402
+from lightnav import tasks as T                                  # noqa: E402
 from lightnav.metrics import summarize                           # noqa: E402
 from lightnav.model import LayaNativeConfig, build, save         # noqa: E402
 
@@ -42,6 +43,9 @@ def parse_args():
     p.add_argument("--mirror", type=float, default=0.0, help="probability of a left-right mirrored sample")
     p.add_argument("--teacher", default=None, help="folder with keys.txt and teacher_probs.npy")
     p.add_argument("--alpha", type=float, default=0.5, help="weight of the teacher distribution in the target")
+    p.add_argument("--match_frac", type=float, default=0.0,
+                   help="share of instruction-route matching samples in training (design B 4.1 (A)); 0 = none")
+    p.add_argument("--match_swap", type=float, default=0.6, help="share of landmark swaps among matching negatives")
     p.add_argument("--loss", choices=("rlcd", "soft-ce"), default="rlcd")
     p.add_argument("--epochs", type=float, default=2.0)
     p.add_argument("--max_steps", type=int, default=None, help="optimizer steps; overrides --epochs")
@@ -101,16 +105,40 @@ def load_data(args):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def predict(model, loader, device):
     model.eval()
-    labels, probs = [], []
+    labels, probs, kinds = [], [], []
     for batch in loader:
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
             logits = model(to_device(batch, device))
         probs.append(torch.softmax(logits.float(), -1).cpu().numpy())
         labels.append(batch["label"].numpy())
+        kinds += [k.rsplit(":", 1)[-1] for k in batch["keys"]]
     model.train()
-    return summarize(np.concatenate(labels), np.concatenate(probs))
+    return np.concatenate(labels), np.concatenate(probs), kinds
+
+
+def evaluate(model, loaders, device):
+    """Navigation metrics; with the shuffled-instruction loader, how often the answer stays the same when the
+    instruction is another sample's (near 1 = the instruction is not read, design B 7.2.1); matching accuracy."""
+    labels, probs, _ = predict(model, loaders["nav"], device)
+    out = {"val": summarize(labels, probs)}
+    if "nav_shuffled_text" in loaders:
+        _, shuf, _ = predict(model, loaders["nav_shuffled_text"], device)
+        p, q = np.clip(probs, 1e-9, 1), np.clip(shuf, 1e-9, 1)
+        out["val"]["text_same"] = float((probs.argmax(-1) == shuf.argmax(-1)).mean())
+        out["val"]["text_kl"] = float((p * (np.log(p) - np.log(q))).sum(-1).mean())
+    if "match" in loaders:
+        _, mprobs, kinds = predict(model, loaders["match"], device)
+        out["val_match"] = T.match_metrics(kinds, mprobs)
+    return out
+
+
+def shuffled_text(rows):
+    """The same samples with the instruction of the sample half the list away (another episode)."""
+    rows = list(rows)
+    k = len(rows) // 2
+    return [r._replace(instruction=rows[(i + k) % len(rows)].instruction) for i, r in enumerate(rows)]
 
 
 def to_device(batch, device):
@@ -145,16 +173,28 @@ def main():
     teacher = D.TeacherStore(args.teacher) if args.teacher else None
     train_set = D.NavDataset(train_rows, roots, tok, cfg, augment=True, mirror_prob=args.mirror,
                              teacher=teacher, alpha=args.alpha)
+    match_val = None
+    if args.match_frac > 0:
+        train_routes, val_routes = T.routes_from_rows(train_rows), T.routes_from_rows(val_rows)
+        match_train = T.MatchDataset(train_routes, roots, tok, cfg, swap_frac=args.match_swap)
+        train_set = T.Mixed(train_set, match_train, args.match_frac)
+        if val_routes:
+            match_val = T.MatchDataset(val_routes, roots, tok, cfg, fixed=True, swap_frac=args.match_swap)
+        print("matching: %d train routes, %d validation routes, %d matching samples per epoch"
+              % (len(train_routes), len(val_routes), train_set.n_aux), flush=True)
     # The same validation samples at every evaluation and in every run that shares the split file.
     val_rows = sorted(val_rows, key=lambda r: r.key)
     if len(val_rows) > args.val_max:
         val_rows = [val_rows[i] for i in sorted(np.random.default_rng(0).choice(len(val_rows), args.val_max, replace=False))]
-    val_set = D.NavDataset(val_rows, roots, tok, cfg)
     collate = lambda b: D.collate(b, tok.pad_token_id)                                   # noqa: E731
     train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True, drop_last=True, collate_fn=collate,
                               num_workers=args.workers, pin_memory=True, persistent_workers=args.workers > 0)
-    val_loader = DataLoader(val_set, batch_size=args.batch * 2, shuffle=False, collate_fn=collate,
-                            num_workers=min(args.workers, 4))
+    val_sets = {"nav": D.NavDataset(val_rows, roots, tok, cfg),
+                "nav_shuffled_text": D.NavDataset(shuffled_text(val_rows), roots, tok, cfg)}
+    if match_val is not None:
+        val_sets["match"] = match_val
+    val_loaders = {k: DataLoader(v, batch_size=args.batch * 2, shuffle=False, collate_fn=collate,
+                                 num_workers=min(args.workers, 4)) for k, v in val_sets.items()}
     steps_per_epoch = len(train_loader) // args.grad_accum
     total = args.max_steps or max(1, int(steps_per_epoch * args.epochs))
     print("train %d rows, val %d unique samples, %d optimizer steps (%d per epoch)"
@@ -177,8 +217,7 @@ def main():
         print("resumed from step %d" % step, flush=True)
 
     from laya.train import rlcd_loss, soft_ce_loss
-    mask = torch.ones(args.batch, 10, dtype=torch.bool, device=device)
-    qtype = torch.zeros(args.batch, dtype=torch.long, device=device)
+    qtype = torch.zeros(args.batch, dtype=torch.long, device=device)     # every task is a choice question
     params = [p for g in opt.param_groups for p in g["params"]]
     log = open(os.path.join(args.out, "log.jsonl"), "a")
     running, seen, started = 0.0, 0, time.time()
@@ -188,6 +227,7 @@ def main():
             batch = to_device(batch, device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
                 logits = model(batch)
+            mask = batch["marker_mask"]
             if args.loss == "rlcd":
                 frac = step / max(1, total - 1)
                 loss = rlcd_loss(logits, batch["target"], mask, qtype, args.sigma[0] + (args.sigma[1] - args.sigma[0]) * frac)
@@ -214,7 +254,7 @@ def main():
                 log.flush()
                 running, seen, started = 0.0, 0, time.time()
             if val_rows and (step % args.eval_every == 0 or step == total):
-                rec = {"step": step, "val": evaluate(model, val_loader, device)}
+                rec = {"step": step, **evaluate(model, val_loaders, device)}
                 print(json.dumps(rec), flush=True)
                 log.write(json.dumps(rec) + "\n")
                 log.flush()

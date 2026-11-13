@@ -62,6 +62,14 @@ for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
         line += " | val acc %.3f, kind acc %.3f, stop recall %s (step %d)" % (
             v["acc"], v["kind_acc"], "%.2f" % v["stop_recall"] if v.get("stop_recall") is not None else "-",
             val["step"])
+        if v.get("text_same") is not None:
+            # same answer with another sample's instruction: 0.9 or more = the instruction is not read
+            line += "\n%-21s same answer with another instruction %.2f%s" % (
+                "", v["text_same"], "  <- instruction ignored" if v["text_same"] >= 0.9 else "")
+        m = val.get("val_match")
+        if m and m.get("acc") is not None:
+            line += " | matching acc %.3f (true %s, swapped landmark %s, other episode %s)" % (
+                m["acc"], *("%.2f" % m[k] if m.get(k) is not None else "-" for k in ("acc_pos", "acc_swap", "acc_other")))
     print(line)
 if not any_run:
     print("no training logs yet")

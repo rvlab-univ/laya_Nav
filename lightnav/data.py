@@ -282,6 +282,20 @@ def target_distribution(label: int, teacher: Optional[np.ndarray] = None, alpha:
     return t
 
 
+def load_frames(root: str, prefix: str, n_frames: int, transform, num_frames: int = NUM_FRAMES, flip: bool = False):
+    """`(pixels [k, 3, H, W], slots)` of the frames NaVILA's rule picks after `n_frames` frames; black padding left out."""
+    images, slots = [], []
+    for slot, frame in enumerate(frame_slots(n_frames, num_frames)):
+        if frame < 0:
+            continue
+        img = Image.open(os.path.join(root, "%sframe_%d.jpg" % (prefix, frame))).convert("RGB")
+        if flip:
+            img = ImageOps.mirror(img)
+        images.append(transform(img))
+        slots.append(slot)
+    return torch.stack(images), slots
+
+
 class NavDataset(Dataset):
     """Decision samples: up to 8 frames (black padding left out), the text half of the sequence, a target."""
 
@@ -311,18 +325,10 @@ class NavDataset(Dataset):
                 instruction, label, flip = mirrored, MIRROR[label], True
                 if teacher is not None:
                     teacher = teacher[MIRROR]
-        images, slots = [], []
-        root = self.image_roots[r.source]
-        for slot, frame in enumerate(frame_slots(r.n_frames, self.cfg.num_frames)):
-            if frame < 0:
-                continue
-            img = Image.open(os.path.join(root, r.frame(frame))).convert("RGB")
-            if flip:
-                img = ImageOps.mirror(img)
-            images.append(self.transform(img))
-            slots.append(slot)
+        pixels, slots = load_frames(self.image_roots[r.source], r.prefix, r.n_frames, self.transform,
+                                    self.cfg.num_frames, flip)
         ids, markers = self.encode_text(instruction)
-        return {"ids": ids, "markers": markers, "pixels": torch.stack(images), "slots": slots,
+        return {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots,
                 "target": target_distribution(label, teacher, self.alpha), "label": label, "key": r.key,
                 "mirrored": flip}
 
@@ -354,10 +360,16 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
     for i, b in enumerate(batch):
         ids[i, :len(b["ids"])] = torch.tensor(b["ids"], dtype=torch.long)
         text_len[i] = len(b["ids"])
+    # Every task has at most NUM_ACTIONS options; shorter option lists (the matching task's 2) are padded with -1
+    # and masked out, so logits and targets are always [B, NUM_ACTIONS].
+    marker_pos = torch.full((n, NUM_ACTIONS), -1, dtype=torch.long)
+    for i, b in enumerate(batch):
+        marker_pos[i, :len(b["markers"])] = torch.tensor(b["markers"], dtype=torch.long)
     out = {
         "input_ids": ids,
         "text_len": text_len,
-        "marker_pos": torch.tensor([b["markers"] for b in batch], dtype=torch.long),
+        "marker_pos": marker_pos,
+        "marker_mask": marker_pos >= 0,
         "pixels": torch.cat([b["pixels"] for b in batch]),
         "frame_owner": torch.tensor([i for i, b in enumerate(batch) for _ in b["slots"]], dtype=torch.long),
         "frame_slot": torch.tensor([s for b in batch for s in b["slots"]], dtype=torch.long),
@@ -366,4 +378,5 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
         out["target"] = torch.from_numpy(np.stack([b["target"] for b in batch]))
         out["label"] = torch.tensor([b["label"] for b in batch], dtype=torch.long)
         out["keys"] = [b["key"] for b in batch]
+        out["task"] = [b.get("task", "nav") for b in batch]
     return out

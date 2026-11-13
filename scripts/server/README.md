@@ -88,10 +88,34 @@ nohup bash scripts/server/train.sh N1 > logs/N1.log 2>&1 &     # Laya 체크포�
 nohup bash scripts/server/train.sh N2 > logs/N2.log 2>&1 &     # ModernBERT-large 원본에서 시작
 ```
 
+**축소안 (2026-11-13)**: N1·N2가 지시문을 읽지 않는 것으로 진단되어(설계 B 7.2.1절) 아래 두 실행으로 줄였다.
+
+```bash
+nohup bash scripts/server/train.sh A > logs/A.log 2>&1 &     # 짝 맞추기 20% + 좌우 반전, 16,000 step
+nohup bash scripts/server/train.sh B > logs/B.log 2>&1 &     # A + 교사 분포 (교사 라벨이 끝난 뒤)
+```
+
+- A는 교사 라벨이 필요 없다. 다만 GPU 메모리 약 50 GB를 쓴다. 교사 라벨을 `SHARDS=6`(약 108 GB)으로 돌리는 중이면 함께 올라가지 않는다.
+- `MATCH`(짝 맞추기 비율, 기본 0.2), `STEPS`(기본 16000), `ALPHA`(기본 0.5)로 바꿀 수 있다.
+- `status.sh`가 검증마다 "same answer with another instruction"을 보여 준다. 0.9 이상이면 지시문을 읽지 않는 것이다.
+
+이전 계획:
+
 - N4(좌우 반전)는 N1·N2 다음이다. N2가 이기면 `START=none bash scripts/server/train.sh N4 …`로 돌린다.
 - N5(교사 분포)는 교사 라벨이 끝난 뒤다.
-- N3, N6, N7, N8은 아직 구현하지 않았다.
+- N3, N6, N8은 아직 구현하지 않았다. N7(짝 맞추기 10%)은 2026-11-13에 구현했다.
 - 결과는 `runs/<이름>/log.jsonl`(학습·검증 기록)과 `runs/<이름>/last/`(체크포인트)에 남는다.
+
+## 진단
+
+학습된 모델이 지시문과 영상을 실제로 쓰는지 잰다(검증 5,000개, 모델마다 수십 분, GPU 약 4 GB).
+
+```bash
+nohup bash scripts/server/diagnose.sh N1 N2 > logs/diagnose.log 2>&1 &
+tail -n 30 logs/diagnose.log
+```
+
+결과는 `runs/diag/N1-N2.json`에 남는다. `shuf_text` 줄의 `same`이 0.9 이상이면 지시문을 읽지 않는 것이다.
 
 ## 진행 상황 보기
 

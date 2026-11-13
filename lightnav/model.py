@@ -131,13 +131,16 @@ class LayaNative(nn.Module):
         return embeds, mask
 
     def forward(self, batch: Dict, feats=None) -> torch.Tensor:
-        """Logits [B, 10] over `questions.ANSWERS`. `feats` skips the vision encoder (see `frame_tokens`)."""
+        """Logits [B, 10]: over `questions.ANSWERS` for a navigation sample; a task with fewer options (padded
+        markers, `marker_mask` False) gets -1e4 in the unused columns. `feats` skips the vision encoder."""
         if feats is None:
             feats = self.encode_frames(batch["pixels"])
         tokens = self.frame_tokens(feats, batch["frame_slot"])
         embeds, mask = self.assemble(batch["input_ids"], batch["text_len"], tokens, batch["frame_owner"])
         marker_pos = batch["marker_pos"]
-        marker_mask = torch.ones_like(marker_pos, dtype=torch.bool)
+        marker_mask = batch.get("marker_mask")
+        if marker_mask is None:
+            marker_mask = marker_pos >= 0
         qtype = torch.zeros(marker_pos.size(0), dtype=torch.long, device=marker_pos.device)   # 0 = choice
         return forward_embeds(self.dm, embeds, mask, marker_pos, marker_mask, qtype)
 
