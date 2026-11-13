@@ -77,23 +77,37 @@ for name in sorted(running):
     if not os.path.exists(os.path.join(runs_dir, name, "log.jsonl")):
         print("%-12s running  (loading data or model, no step logged yet)" % name)
 
-shards = []
-for path in sorted(glob.glob(os.path.join(logs_dir, "teacher_shard_*.log"))):
-    last = None
+# Only the shards of the latest run: a run with fewer shards leaves the older teacher_shard_<i>.log files behind.
+# Each log starts with "shard i/N: ..."; N comes from shard 0's log.
+def shard_log(path):
+    head, last = None, None
     with open(path) as f:
         for line in f:
+            h = re.search(r"shard (\d+)/(\d+): \d+ samples", line)
+            if h:
+                head, last = h, None
             m = re.search(r"shard (\d+): (\d+)/(\d+), ([\d.]+) samples/s", line)
             if m:
                 last = m
-    if last:
-        shards.append(tuple(float(x) for x in last.groups()))
+    return head, last
+
+logs = {}
+for path in glob.glob(os.path.join(logs_dir, "teacher_shard_*.log")):
+    head, last = shard_log(path)
+    if head:
+        logs[int(head.group(1))] = (int(head.group(2)), last)
+n = logs[0][0] if 0 in logs else None
+shards = [(i, *(float(x) for x in last.groups()[1:])) for i, (k, last) in sorted(logs.items())
+          if k == n and i < n and last]
 if shards:
-    print("== teacher labels")
+    print("== teacher labels (%d shards)" % n)
     for i, done, todo, rate in shards:
-        print("shard %d: %d/%d, %.2f samples/s" % (i, done, todo, rate))
+        print("shard %d: %d/%d, %.2f samples/s, %.1f h left" % (i, done, todo, rate, (todo - done) / rate / 3600))
     rate = sum(s[3] for s in shards)
     left = sum(s[2] - s[1] for s in shards)
-    print("all shards: %.2f samples/s, %d samples left, about %.1f h" % (rate, left, left / rate / 3600 if rate else 0))
+    # the shards run side by side: the run ends with the slowest one
+    hours = max((s[2] - s[1]) / s[3] for s in shards) / 3600
+    print("all shards: %.2f samples/s, %d samples left, about %.1f h" % (rate, left, hours))
 EOF
 
 echo "== GPU"
