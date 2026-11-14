@@ -153,7 +153,21 @@ SOURCES="r2r rxr" nohup bash scripts/server/features.sh > logs/features.log 2>&1
 
 ### 6.2 실험
 
-모두 `runs/D/last`에서 시작해 6,000 step(64개씩)을 학습하고, 끝나면 `~/light_nav/<이름>.tar.gz`(약 1.8 GB)를 만든다.
+모두 `runs/D/last`에서 시작해 3,000 step(64개씩)을 학습하고, 끝나면 `~/light_nav/<이름>.tar.gz`(약 1.8 GB)를 만든다.
+
+**L 실험 셋을 한 번에 (권장):**
+
+```bash
+cd ~/light_nav && git pull
+nohup bash scripts/server/l_runs.sh > logs/l_runs.log 2>&1 &
+tail -n 20 logs/l_runs.log
+```
+
+- 차례: R2R 특징(6.1, 이미 끝났으면 건너뜀) → 교사 라벨 합치기(`runs/teacher/teacher_probs.npy`가 있으면 건너뜀) → `L0_r2r` → `L2_teacher` → `L1_dagger1`. 실험 하나에 약 2.5시간, 모두 8시간 안팎이다.
+- `L1_dagger1` 앞에서 `~/light_nav/dagger1.tar`와 `dagger1.tar.sha256`(연구실 PC에서 만든 것, 6.4)을 기다린다. 둘이 있고 체크섬이 맞으면 풀고 시작한다. 그러니 L0와 L2가 도는 동안 올리면 된다. 최대 12시간(`WAIT_HOURS`) 기다린다.
+- 멈췄으면 같은 명령을 다시 실행한다. `<이름>.tar.gz`가 있는 실험은 끝난 것으로 보고 건너뛰고, 중간에 멈춘 실험은 마지막 저장에서 이어서 한다.
+
+하나씩 돌릴 때:
 
 ```bash
 nohup bash scripts/server/experiment.sh L0_r2r > logs/L0_r2r.log 2>&1 &
@@ -165,7 +179,7 @@ nohup bash scripts/server/experiment.sh L0_r2r > logs/L0_r2r.log 2>&1 &
 | `L2_teacher` (교사 증류) | `--teacher runs/teacher` | `bash scripts/server/teacher_merge.sh` (지금까지 뽑은 교사 라벨 합치기) |
 | `L1_dagger1` (DAgger 1회차) | `--extra dagger1 data/dagger/round1/annotations.json` | 연구실 PC에서 만든 `dagger1.tar`를 `~/light_nav`에 올리고 `tar -xf dagger1.tar` |
 
-- 환경 변수로 바꾸는 것: `STEPS=6000`, `INIT=runs/D/last`, `BATCH=16 ACCUM=4`(메모리가 모자라면 `BATCH=8 ACCUM=8`), `RXR=1`(R2R + RxR로 학습, 6.1에서 RxR 특징을 만들었을 때).
+- 환경 변수로 바꾸는 것: `STEPS=3000`, `INIT=runs/D/last`, `BATCH=16 ACCUM=4`(메모리가 모자라면 `BATCH=8 ACCUM=8`), `RXR=1`(R2R + RxR로 학습, 6.1에서 RxR 특징을 만들었을 때).
 - 이름 뒤의 인자는 `scripts/train.py`로 간다.
 - 진행은 `bash scripts/server/status.sh`에 다른 학습과 같이 나온다.
 - 연구실 PC의 실험과 비교하려면 같은 이름·같은 설정으로 돌린다. `RXR=1`은 PC에서 할 수 없는 조건이므로 이름을 따로 붙인다(예: `L0_r2r_rxr`).
@@ -182,7 +196,7 @@ val_seen 100개와 val_unseen 100개를 주행하고 D와 같은 에피소드로
 
 ### 6.4 DAgger 데이터 올리기
 
-수집은 PC에서만 된다(`scripts/dagger_round.sh`). 끝난 회차는 PC에서 `bash scripts/pack_dagger.sh 1`로 묶는다(`dagger1.tar`, 약 5 GB). 서버의 `~/light_nav`에 올려 `tar -xf dagger1.tar`로 풀면 6.2의 `--extra`로 쓸 수 있다.
+수집은 PC에서만 된다(`scripts/dagger_round.sh`). 끝난 회차는 PC에서 `bash scripts/pack_dagger.sh 1`로 묶는다(`dagger1.tar`, 약 5 GB, 체크섬 `dagger1.tar.sha256`도 같이 만든다). 둘 다 서버의 `~/light_nav`에 올린다. `l_runs.sh`는 체크섬을 확인하고 알아서 푼다. 하나씩 돌릴 때는 `sha256sum -c dagger1.tar.sha256`이 `OK`인지 본 뒤 `tar -xf dagger1.tar`로 풀면 6.2의 `--extra`로 쓸 수 있다.
 
 ## 진단
 

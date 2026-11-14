@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # One experiment from stored features on the server: the training of scripts/local_experiment.sh on the lab PC (a
-# D-type student from runs/D/last, 6,000 optimizer steps of 64 samples), then the checkpoint packed for download.
+# D-type student from runs/D/last, 3,000 optimizer steps of 64 samples), then the checkpoint packed for download.
 # Needs scripts/server/features.sh first. Rerunning the same command resumes from runs/<name>/last.
 #   nohup bash scripts/server/experiment.sh L0_r2r > logs/L0_r2r.log 2>&1 &
 #   nohup bash scripts/server/experiment.sh L2_teacher --teacher runs/teacher > logs/L2_teacher.log 2>&1 &
 #   nohup bash scripts/server/experiment.sh L1_dagger1 --extra dagger1 data/dagger/round1/annotations.json \
 #       > logs/L1_dagger1.log 2>&1 &
 # Arguments after the name go to scripts/train.py. Settings from the environment:
-#   STEPS=6000  INIT=runs/D/last  BATCH=16  ACCUM=4 (64 samples per step; BATCH=8 ACCUM=8 when memory is short)
+#   STEPS=3000  INIT=runs/D/last  BATCH=16  ACCUM=4 (64 samples per step; BATCH=8 ACCUM=8 when memory is short)
 #   RXR=1       train on R2R + RxR, as D did (features.sh with SOURCES="r2r rxr"); the lab PC has R2R only
 # --teacher needs runs/teacher/teacher_probs.npy: scripts/server/teacher_merge.sh.
 # --extra (a DAgger round) needs the round from the lab PC, where Habitat runs: scripts/pack_dagger.sh there, then
@@ -36,7 +36,9 @@ log "experiment $NAME from $INIT: ${DATA_ARGS[*]} $*"
 python scripts/train.py --out "$RUNS/$NAME" "${DATA_ARGS[@]}" --features "$FEATURES" --split "$SPLIT" \
     --laya none --encoder answerdotai/ModernBERT-large --freeze_vision --tags 10 5 --grids 2 1 \
     --mirror 0.5 --match_frac 0.2 --match_synth 0.25 --contrast 1.0 \
-    --init "$INIT" --max_steps "${STEPS:-6000}" --batch "${BATCH:-16}" --grad_accum "${ACCUM:-4}" \
+    --init "$INIT" --max_steps "${STEPS:-3000}" --batch "${BATCH:-16}" --grad_accum "${ACCUM:-4}" \
     --eval_every 1000 --save_every 1000 --workers "${WORKERS:-$W}" "$@"
-tar -czf "$ROOT/$NAME.tar.gz" --exclude="$NAME/last/train_state.pt" -C "$RUNS" "$NAME"
+# Written under another name first: a <name>.tar.gz that exists is complete (l_runs.sh skips that run).
+tar -czf "$ROOT/$NAME.partial.tar.gz" --exclude="$NAME/last/train_state.pt" -C "$RUNS" "$NAME"
+mv "$ROOT/$NAME.partial.tar.gz" "$ROOT/$NAME.tar.gz"
 log "experiment $NAME finished: $(ls -lh "$ROOT/$NAME.tar.gz" | awk '{print $5}') in $ROOT/$NAME.tar.gz"

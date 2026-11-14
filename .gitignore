@@ -11,6 +11,7 @@ checkpoints/
 # 큰 파일
 *.tar
 *.tar.gz
+*.sha256
 *.pt
 *.npy
 *.safetensors

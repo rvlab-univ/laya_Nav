@@ -4,14 +4,14 @@
 # (scripts/local_drive.sh).
 #   nohup bash scripts/local_experiment.sh L1_dagger1 --extra dagger1 data/dagger/round1/annotations.json \
 #       > logs/L1_dagger1.log 2>&1 &
-# Arguments after the name go to scripts/train.py. The start is runs/D/last and the length 6,000 optimizer steps of
-# 64 samples (INIT, STEPS): about 5 hours at 3 s per step, then about 20 minutes of driving. Rerun to continue:
+# Arguments after the name go to scripts/train.py. The start is runs/D/last and the length 3,000 optimizer steps of
+# 64 samples (INIT, STEPS): about 2.5 hours at 3 s per step, then about 20 minutes of driving. Rerun to continue:
 # training resumes from its last save and finished episodes are skipped.
 # Training needs the whole 16 GB GPU: not while a collection (dagger_round.sh, build_r2r_features.sh) is running.
 # The same training on the server: scripts/server/experiment.sh.
 set -u
 NAME="${1:?run name}"; shift
-STEPS="${STEPS:-6000}"
+STEPS="${STEPS:-3000}"
 INIT="${INIT:-runs/D/last}"
 cd "$(dirname "$0")/.."
 export HF_HOME="$PWD/assets/hf_cache" TOKENIZERS_PARALLELISM=false
