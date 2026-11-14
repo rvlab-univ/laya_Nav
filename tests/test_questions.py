@@ -73,3 +73,16 @@ def test_every_annotation_answer_is_known(r2r_annotations):
     assert answers == set(ANSWERS)
     with pytest.raises(KeyError):
         answer_index("The next action is move forward 100 cm.")
+
+
+def test_summary_reports_what_a_constant_answer_scores():
+    """6 forward 75, 2 left 15, 1 left 45, 1 stop: the best constant answer gets 0.6, the best constant kind 0.6."""
+    import numpy as np
+
+    from lightnav.metrics import summarize
+    labels = np.array([3] * 6 + [4, 4, 6, 0])
+    probs = np.full((10, 10), 0.01)
+    probs[np.arange(10), [3] * 6 + [4, 5, 6, 3]] = 0.91          # one left 15 answered as left 30, the stop missed
+    s = summarize(labels, probs)
+    assert s["constant_acc"] == 0.6 and s["constant_kind_acc"] == 0.6
+    assert abs(s["acc"] - 0.8) < 1e-9 and abs(s["kind_acc"] - 0.9) < 1e-9

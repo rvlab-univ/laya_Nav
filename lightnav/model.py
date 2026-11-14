@@ -142,11 +142,15 @@ class LayaNative(nn.Module):
         return self.vision(pixel_values=pixels).last_hidden_state
 
     def pool_history(self, feats: torch.Tensor, grid: Optional[int] = None) -> torch.Tensor:
-        """Frame features averaged down to [N, grid * grid, dv] (default: hist_grid, for past frames)."""
+        """Frame features averaged down to [N, grid * grid, dv] (default: hist_grid, for past frames). `feats` is the
+        patch grid or an already pooled square grid (stored features, lightnav.features)."""
         grid = grid or self.cfg.hist_grid
-        n, _, dv = feats.shape
-        x = feats.view(n, self.grid, self.grid, dv).permute(0, 3, 1, 2)
-        x = F.avg_pool2d(x, self.grid // grid)
+        n, m, dv = feats.shape
+        src = int(round(m ** 0.5))
+        if src * src != m or src % grid:
+            raise ValueError("cannot pool %d tokens to a %d x %d grid" % (m, grid, grid))
+        x = feats.reshape(n, src, src, dv).permute(0, 3, 1, 2)
+        x = F.avg_pool2d(x, src // grid)
         return x.flatten(2).transpose(1, 2)
 
     def set_tag_tokens(self, tok) -> None:
@@ -165,6 +169,11 @@ class LayaNative(nn.Module):
         """[N, vocab] score of each tag phrase for each frame: cosine similarity of the pooled SigLIP embedding,
         normalised by the phrase's statistics over training frames (`set_tag_stats`)."""
         pooled = self.vision.head(feats.to(next(self.vision.head.parameters()).dtype))
+        return self.tag_scores_pooled(pooled, normalise)
+
+    @torch.no_grad()
+    def tag_scores_pooled(self, pooled: torch.Tensor, normalise: bool = True) -> torch.Tensor:
+        """`tag_scores` from the pooled embeddings [N, dv] themselves (stored features)."""
         cos = F.normalize(pooled.float(), dim=-1) @ self.tag_text.T
         return (cos - self.tag_mu) / self.tag_sd if normalise else cos
 
@@ -180,7 +189,10 @@ class LayaNative(nn.Module):
         `override` ([B, K] vocab indices, -1 padding) replaces them (the matching task's separable warm-up)."""
         cur = self.cfg.num_frames - 1
         full_n = self.grid * self.grid
-        if torch.is_tensor(feats):
+        if isinstance(feats, dict):             # stored features: every frame has its pooled embedding
+            full = list(range(len(feats["pooled"])))
+            scores = self.tag_scores_pooled(feats["pooled"]) if full else None
+        elif torch.is_tensor(feats):
             full = [i for i in range(len(feats))] if feats.shape[1] == full_n else []
             scores = self.tag_scores(feats) if full else None
         else:                                   # the agent's cache: pooled past frames have no tags
@@ -232,10 +244,13 @@ class LayaNative(nn.Module):
         """Image tokens of each frame: the current frame keeps every patch, past frames are pooled.
 
         `feats` is [N, grid * grid, dv] for every frame, or a list holding, per frame, either that or an
-        already pooled [hist_grid * hist_grid, dv] (what the agent caches for past frames).
+        already pooled [hist_grid * hist_grid, dv] (what the agent caches for past frames), or stored features
+        ({"grid": [N, g * g, dv], ...} with g a multiple of both cur_grid and hist_grid).
         """
         cur = self.cfg.num_frames - 1
         out = []
+        if isinstance(feats, dict):
+            feats = feats["grid"].to(self.vis_proj[0].weight.dtype)
         for f, s in zip(feats, slots.tolist()):
             if s == cur:
                 if self.cfg.cur_grid and f.shape[0] != self.pos_cur.shape[0]:
@@ -273,7 +288,7 @@ class LayaNative(nn.Module):
         """Logits [B, 10]: over `questions.ANSWERS` for a navigation sample; a task with fewer options (padded
         markers, `marker_mask` False) gets -1e4 in the unused columns. `feats` skips the vision encoder."""
         if feats is None:
-            feats = self.encode_frames(batch["pixels"])
+            feats = batch["feats"] if "feats" in batch else self.encode_frames(batch["pixels"])
         tokens = self.frame_tokens(feats, batch["frame_slot"])
         tags = None
         if self.tagging:

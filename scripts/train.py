@@ -34,6 +34,17 @@ def parse_args():
     p.add_argument("--rxr_ann", default=None, help="RxR annotations.json; left out when not given")
     p.add_argument("--rxr_frames", default=os.path.join(data, "RxR", "train"))
     p.add_argument("--only_available", action="store_true", help="keep only episodes whose frame folder exists")
+    p.add_argument("--features", default=None,
+                   help="folder of stored frame features (scripts/cache_features.py) read instead of the images: the "
+                        "vision encoder is not run, so it needs --freeze_vision and --grids that divide the stored "
+                        "grid. No colour jitter in this mode.")
+    p.add_argument("--extra", nargs="+", action="append", default=[], metavar="NAME ANN [FRAMES]",
+                   help="more training samples in NaVILA's format, e.g. a DAgger round (scripts/collect_dagger.py): "
+                        "a source name, its annotations.json and, without --features, its frame folder. All of it "
+                        "is training data: no part in the validation split or in the matching task. Repeatable.")
+    p.add_argument("--init", default=None,
+                   help="start from the weights of this checkpoint folder (runs/D/last) with a new optimizer; the "
+                        "model settings (--tags, --grids, --encoder) must be the checkpoint's")
     p.add_argument("--split", default=None, help="validation split file; made at <out>/split.json when missing")
     p.add_argument("--r2r_scenes", default=None, help="VLN-CE train.json.gz, for a scene-level split of R2R")
     p.add_argument("--rxr_scenes", default=None, help="RxR rxr_train_guide.jsonl.gz, for a scene-level split of RxR")
@@ -87,22 +98,33 @@ def parse_args():
     return p.parse_args()
 
 
+def available(rows, frames):
+    """The rows of episodes whose every frame is on disk (a folder of images) or stored (a FeatureStore)."""
+    need = {}
+    for r in rows:
+        need[r.prefix] = max(need.get(r.prefix, 0), r.n_frames)
+    if hasattr(frames, "has"):
+        have = {p for p, n in need.items() if frames.has(p, n)}
+    else:
+        have = {p for p, n in need.items() if os.path.isdir(os.path.join(frames, p))
+                and {"frame_%d.jpg" % i for i in range(n)} <= set(os.listdir(os.path.join(frames, p)))}
+    return [r for r in rows if r.prefix in have]
+
+
 def load_data(args):
-    """`(train rows with NaVILA's copies, unique validation rows, image roots)`."""
+    """`(train rows with NaVILA's copies, unique validation rows, image roots)`. The rows of --extra sources come
+    last in the training rows."""
     sources = [("r2r", args.r2r_ann, args.r2r_frames, args.r2r_scenes)]
     if args.rxr_ann:
         sources.append(("rxr", args.rxr_ann, args.rxr_frames, args.rxr_scenes))
     rows, roots, scenes = [], {}, {}
     for name, ann, frames, scene_file in sources:
         part = D.load_rows(ann, name)
+        if args.features:
+            from lightnav.features import FeatureStore
+            frames = FeatureStore(args.features, name)
         if args.only_available:
-            # an episode counts only when every frame its samples can ask for is on disk
-            need = {}
-            for r in part:
-                need[r.prefix] = max(need.get(r.prefix, 0), r.n_frames)
-            have = {p for p, n in need.items() if os.path.isdir(os.path.join(frames, p))
-                    and {"frame_%d.jpg" % i for i in range(n)} <= set(os.listdir(os.path.join(frames, p)))}
-            part = [r for r in part if r.prefix in have]
+            part = available(part, frames)
         rows += part
         roots[name] = frames
         if not scene_file:
@@ -121,6 +143,21 @@ def load_data(args):
         print("wrote %s (%s, held-out scenes: %s)" % (split, mode, sorted(held) if held else "-"), flush=True)
     train, held = D.split_rows(rows, D.load_split(split))
     unique = list({r.key: r for r in held}.values())
+    for name, ann, *frames in args.extra:
+        if name in roots or len(frames) != (0 if args.features else 1):
+            raise SystemExit("--extra %s: a new source name, annotations.json and%s a frame folder"
+                             % (name, " (with --features) not" if args.features else ""))
+        part = D.load_rows(ann, name)
+        if args.features:
+            from lightnav.features import FeatureStore
+            roots[name] = FeatureStore(args.features, name)
+        else:
+            roots[name] = frames[0]
+        if args.only_available:
+            part = available(part, roots[name])
+        print("%s (extra, training only): %d rows, %d episodes" % (name, len(part), len({r.episode for r in part})),
+              flush=True)
+        train += part
     return train, unique, roots
 
 
@@ -172,7 +209,7 @@ def contrast_loss(model, batch, feats, logits, margin):
     neg = {"input_ids": batch["neg_input_ids"], "text_len": batch["neg_text_len"],
            "marker_pos": batch["neg_marker_pos"], "marker_mask": batch["neg_marker_pos"] >= 0,
            "frame_owner": remap[owner[keep]], "frame_slot": batch["frame_slot"][keep]}
-    neg_logits = model(neg, feats=feats[keep])
+    neg_logits = model(neg, feats={k: v[keep] for k, v in feats.items()} if isinstance(feats, dict) else feats[keep])
     target = batch["target"][rows]
     lp_own = (target * torch.log_softmax(logits[rows], -1)).sum(-1)
     lp_neg = (target * torch.log_softmax(neg_logits, -1)).sum(-1)
@@ -181,7 +218,8 @@ def contrast_loss(model, batch, feats, logits, margin):
 
 
 def to_device(batch, device):
-    return {k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v for k, v in batch.items()}
+    move = lambda v: v.to(device, non_blocking=True) if torch.is_tensor(v) else v      # noqa: E731
+    return {k: {n: move(x) for n, x in v.items()} if isinstance(v, dict) else move(v) for k, v in batch.items()}
 
 
 @torch.no_grad()
@@ -194,6 +232,10 @@ def set_tag_stats(model, rows, roots, cfg, n, device, seed):
     picks = [eps[i] for i in rng.integers(len(eps), size=n)]
     cos, chunk = [], []
     model.eval()
+    if hasattr(roots[picks[0].source], "frames"):          # stored features: the pooled embeddings are on disk
+        pooled = torch.cat([roots[r.source].frames(r.prefix, [int(rng.integers(r.n_frames))])["pooled"]
+                            for r in picks])
+        cos, picks = [model.tag_scores_pooled(pooled.to(device), normalise=False).float()], []
     for k, r in enumerate(picks):
         f = int(rng.integers(r.n_frames))
         with Image.open(os.path.join(roots[r.source], r.frame(f))) as im:
@@ -231,6 +273,20 @@ def main():
                            tags_current=args.tags[0], tags_history=args.tags[1], cur_grid=args.grids[0],
                            hist_grid=args.grids[1])
     model, tok = build(cfg)
+    if args.init:
+        from safetensors.torch import load_file
+        model.load_state_dict(load_file(os.path.join(args.init, "model.safetensors")), strict=True)
+        print("weights from %s" % args.init, flush=True)
+    if args.features:
+        with open(os.path.join(args.features, "meta.json")) as f:
+            meta = json.load(f)
+        g = meta["grid"]
+        if not args.freeze_vision:
+            raise SystemExit("--features needs --freeze_vision: stored features are the frozen encoder's")
+        if meta["vision_encoder"] != cfg.vision_encoder or not cfg.cur_grid or g % cfg.cur_grid or g % cfg.hist_grid:
+            raise SystemExit("--features %s holds %s at a %d x %d grid; the model wants %s with --grids %d %d"
+                             % (args.features, meta["vision_encoder"], g, g, cfg.vision_encoder, cfg.cur_grid,
+                                cfg.hist_grid))
     model.set_stage("nav")
     if args.freeze_vision:
         for q in model.vision.parameters():
@@ -247,12 +303,17 @@ def main():
 
     train_rows, val_rows, roots = load_data(args)
     teacher = D.TeacherStore(args.teacher) if args.teacher else None
-    negative = T.OtherInstruction(T.routes_from_rows(train_rows)) if args.contrast > 0 else None
+    # --extra sources (DAgger rollouts) are other walks of R2R's episodes: no routes of their own for the matching
+    # task, and the other instruction of the contrast loss comes from R2R's
+    extra = {e[0] for e in args.extra}
+    base_rows = [r for r in train_rows if r.source not in extra]
+    negative = (T.OtherInstruction(T.routes_from_rows(base_rows), alias={n: "r2r" for n in extra})
+                if args.contrast > 0 else None)
     train_set = D.NavDataset(train_rows, roots, tok, cfg, augment=True, mirror_prob=args.mirror,
                              teacher=teacher, alpha=args.alpha, negative=negative, negative_prob=args.contrast_prob)
     match_val = None
     if args.match_frac > 0:
-        train_routes, val_routes = T.routes_from_rows(train_rows), T.routes_from_rows(val_rows)
+        train_routes, val_routes = T.routes_from_rows(base_rows), T.routes_from_rows(val_rows)
         match_train = T.MatchDataset(train_routes, roots, tok, cfg, swap_frac=args.match_swap,
                                      synthetic=args.match_synth)
         train_set = T.Mixed(train_set, match_train, args.match_frac)
@@ -267,9 +328,12 @@ def main():
     collate = lambda b: D.collate(b, tok.pad_token_id)                                   # noqa: E731
     warm_loader = None
     if model.tagging:
-        set_tag_stats(model, train_rows, roots, cfg, args.tag_stats_frames, device, args.seed)
+        if args.init:
+            print("tag statistics kept from %s" % args.init, flush=True)       # the weights were trained with them
+        else:
+            set_tag_stats(model, train_rows, roots, cfg, args.tag_stats_frames, device, args.seed)
         if args.warm_steps > 0:
-            warm_set = T.MatchDataset(T.routes_from_rows(train_rows), roots, tok, cfg, swap_frac=args.match_swap,
+            warm_set = T.MatchDataset(T.routes_from_rows(base_rows), roots, tok, cfg, swap_frac=args.match_swap,
                                       synthetic=1.0)
             warm_loader = DataLoader(warm_set, batch_size=args.batch, shuffle=True, drop_last=True,
                                      collate_fn=collate, num_workers=args.workers, pin_memory=True)
@@ -326,7 +390,7 @@ def main():
         for i, batch in enumerate(batches()):
             batch = to_device(batch, device)
             with torch.autocast(device.type, dtype=torch.bfloat16, enabled=device.type == "cuda"):
-                feats = model.encode_frames(batch["pixels"])
+                feats = batch["feats"] if "feats" in batch else model.encode_frames(batch["pixels"])
                 logits = model(batch, feats=feats)
             mask = batch["marker_mask"]
             if args.loss == "rlcd":

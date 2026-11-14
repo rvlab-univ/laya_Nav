@@ -6,6 +6,11 @@
 Means follow NaVILA's NaVILA/evaluation/scripts/eval_jsons.py: SR, OS, nDTW, TL and steps over all episodes;
 NE and SPL over the episodes where they are finite (the rest are counted as invalid). The pair comparison uses the
 episodes both runs have, with a paired bootstrap (10,000 resamples) for a 95% interval of the difference.
+
+A second table says how the episodes went, because SR alone hides it (N2 and D both ended farther from the goal
+than they started, on average): progress = distance to the goal at the start minus at the end; the share of
+episodes that ended nearer / farther (by more than 0.5 m); and how the failures ended (the student said stop
+somewhere else, or never said stop).
 """
 import argparse
 import json
@@ -41,6 +46,44 @@ def summarize(rows):
     out["ms_p90"] = float(np.percentile(ms, 90)) if ms else None
     out["unparsed"] = int(sum(r.get("unparsed", 0) for r in rows))
     return out
+
+
+def start_distances(run):
+    """Episode id -> geodesic distance to the goal at the start, from the episode file (older runs did not log it)."""
+    import gzip
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(run, "subset.json")) as f:
+            sub = json.load(f)
+    except OSError:
+        return {}
+    part = sub.get("part", "val_unseen")
+    path = {"r2r": "data/vlnce/r2r/%s.json.gz" % part,
+            "rxr": "data/vlnce/rxr/%s/%s_guide.json.gz" % (part, part)}.get(sub.get("split"))
+    if not path or not os.path.exists(os.path.join(root, path)):
+        return {}
+    with gzip.open(os.path.join(root, path), "rt") as f:
+        return {str(e["episode_id"]): e["info"]["geodesic_distance"] for e in json.load(f)["episodes"]
+                if "geodesic_distance" in (e.get("info") or {})}
+
+
+def outcomes(rows, start):
+    """How the episodes went: progress toward the goal and how the failures ended."""
+    prog = []
+    for r in rows:
+        s = r.get("start_distance")
+        s = start.get(str(r["episode_id"])) if s is None else s
+        e = r["metrics"].get("distance_to_goal")
+        if finite(s) and finite(e):
+            prog.append(s - e)
+    n = len(rows)
+    stopped = [bool(r.get("answers", {}).get("stop", 0)) for r in rows]
+    ok = [bool(r["metrics"].get("success")) for r in rows]
+    return {"progress_m": float(np.mean(prog)) if prog else None,
+            "nearer": 100.0 * sum(p > 0.5 for p in prog) / len(prog) if prog else None,
+            "farther": 100.0 * sum(p < -0.5 for p in prog) / len(prog) if prog else None,
+            "wrong_stop": 100.0 * sum(s and not o for s, o in zip(stopped, ok)) / n if n else None,
+            "no_stop": 100.0 * sum(not s for s in stopped) / n if n else None}
 
 
 def paired(a, b, key, scale, n=10000, seed=0):
@@ -81,6 +124,15 @@ def main():
         if s.get("invalid_SPL") or s.get("invalid_NE") or s["unparsed"]:
             print("%s: invalid SPL %d, invalid NE %d, unparsed answers %d"
                   % (run, s["invalid_SPL"], s["invalid_NE"], s["unparsed"]))
+    print()
+    head2 = ["run", "progress (m)", "ended nearer %", "ended farther %", "stopped elsewhere %", "never stopped %"]
+    print("| " + " | ".join(head2) + " |")
+    print("|" + "---|" * len(head2))
+    for run, rows in data.items():
+        o = outcomes(list(rows.values()), start_distances(run))
+        table[run]["outcomes"] = o
+        print("| " + " | ".join([run, "–" if o["progress_m"] is None else "%+.2f" % o["progress_m"]]
+                                + [fmt(o[k]) for k in ("nearer", "farther", "wrong_stop", "no_stop")]) + " |")
     out = {"runs": table}
     if args.pair and len(args.runs) > 1:
         base = args.runs[0]

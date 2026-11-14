@@ -50,6 +50,9 @@ def parse_args():
     p.add_argument("--agent", choices=("http", "gt", "fixed"), required=True)
     p.add_argument("--url", default="http://127.0.0.1:8765")
     p.add_argument("--out", required=True)
+    p.add_argument("--part", choices=("val_unseen", "val_seen", "train"), default="val_unseen",
+                   help="which episodes: val_unseen is the test set of the paper; pick checkpoints and thresholds "
+                        "on val_seen or train episodes, never on val_unseen")
     p.add_argument("--episodes", type=int, default=None, help="evaluate a fixed random subset of this size")
     p.add_argument("--seed", type=int, default=0, help="seed of the subset")
     p.add_argument("--scenes_dir", default=os.path.join(ROOT, "data", "scene_datasets"))
@@ -173,7 +176,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     out = os.path.abspath(args.out)
 
-    ids = episode_ids(cfg)
+    ids = episode_ids(cfg, args.part)
     subset_file = os.path.join(out, "subset.json")
     if os.path.exists(subset_file):
         with open(subset_file) as f:
@@ -181,7 +184,7 @@ def main():
     else:
         chosen = sorted(random.Random(args.seed).sample(ids, args.episodes), key=ids.index) if args.episodes else ids
         with open(subset_file, "w") as f:
-            json.dump({"split": args.split, "seed": args.seed, "episodes": chosen}, f)
+            json.dump({"split": args.split, "part": args.part, "seed": args.seed, "episodes": chosen}, f)
     results = os.path.join(out, "episodes.jsonl")
     done = set()
     if os.path.exists(results):
@@ -197,8 +200,9 @@ def main():
     import habitat
     import habitat_extensions  # noqa: F401  (registers VLN-CE's task, measures and datasets)
 
-    agent = {"gt": lambda: GtAgent(cfg), "fixed": FixedAgent, "http": lambda: HttpAgent(args.url)}[args.agent]()
-    env = habitat.Env(config=make_config(args, cfg, todo).TASK_CONFIG)
+    agent = {"gt": lambda: GtAgent(cfg, args.part), "fixed": FixedAgent,
+             "http": lambda: HttpAgent(args.url)}[args.agent]()
+    env = habitat.Env(config=make_config(args, cfg, todo, args.part).TASK_CONFIG)
     started = time.time()
     with open(results, "a") as f:
         for i in range(len(env.episodes)):
@@ -208,7 +212,9 @@ def main():
             rec = run_episode(env, agent, obs)
             metrics = {k: float(v) for k, v in env.get_metrics().items()
                        if isinstance(v, (int, float, np.integer, np.floating))}
+            start = (ep.info or {}).get("geodesic_distance") if hasattr(ep, "info") else None
             rec = dict(episode_id=ep.episode_id, scene=os.path.basename(ep.scene_id).split(".")[0],
+                       start_distance=None if start is None else float(start),
                        metrics=metrics, wall_s=time.time() - t, **rec)
             f.write(json.dumps(rec) + "\n")
             f.flush()

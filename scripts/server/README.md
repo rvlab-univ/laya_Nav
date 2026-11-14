@@ -132,6 +132,58 @@ nohup bash scripts/server/train.sh D > logs/D.log 2>&1 &
 - N3, N6, N8은 아직 구현하지 않았다. N7(짝 맞추기 10%)은 2026-11-13에 구현했다.
 - 결과는 `runs/<이름>/log.jsonl`(학습·검증 기록)과 `runs/<이름>/last/`(체크포인트)에 남는다.
 
+## 6. 저장 특징으로 하는 실험 (D 방식 학생)
+
+D처럼 영상 인코더를 고정한 학생은 프레임 특징을 한 번 만들어 두면 학습에서 영상 인코더가 빠진다. 연구실 PC의 `scripts/local_experiment.sh`와 같은 학습을 서버에서 돌리는 방법이다. **주행(수집과 주행 평가)은 서버에서 안 된다.** Habitat이 없기 때문이다.
+
+### 6.1 특징 만들기 (한 번만)
+
+```bash
+nohup bash scripts/server/features.sh > logs/features.log 2>&1 &                      # R2R
+SOURCES="r2r rxr" nohup bash scripts/server/features.sh > logs/features.log 2>&1 &    # R2R + RxR
+```
+
+| 출처 | 프레임 | 크기 | 연구실 PC 속도로 본 시간 |
+|---|---|---|---|
+| R2R | 60만 | 9 GB | 약 40분 |
+| RxR (영어) | 84만 | 13 GB | 약 55분 |
+
+- 서버에 있는 NaVILA 프레임을 읽기만 한다. 결과는 `data/features/siglip2_g2`에 쌓인다.
+- 로그 끝에 `r2r: 10819 of 10819 episodes stored`와 `complete`가 나오면 끝난 것이다. 중간에 멈췄으면 같은 명령을 다시 실행한다.
+
+### 6.2 실험
+
+모두 `runs/D/last`에서 시작해 6,000 step(64개씩)을 학습하고, 끝나면 `~/light_nav/<이름>.tar.gz`(약 1.8 GB)를 만든다.
+
+```bash
+nohup bash scripts/server/experiment.sh L0_r2r > logs/L0_r2r.log 2>&1 &
+```
+
+| 이름 | 명령에 덧붙이는 것 | 먼저 필요한 것 |
+|---|---|---|
+| `L0_r2r` (기준) | 없음 | 6.1 |
+| `L2_teacher` (교사 증류) | `--teacher runs/teacher` | `bash scripts/server/teacher_merge.sh` (지금까지 뽑은 교사 라벨 합치기) |
+| `L1_dagger1` (DAgger 1회차) | `--extra dagger1 data/dagger/round1/annotations.json` | 연구실 PC에서 만든 `dagger1.tar`를 `~/light_nav`에 올리고 `tar -xf dagger1.tar` |
+
+- 환경 변수로 바꾸는 것: `STEPS=6000`, `INIT=runs/D/last`, `BATCH=16 ACCUM=4`(메모리가 모자라면 `BATCH=8 ACCUM=8`), `RXR=1`(R2R + RxR로 학습, 6.1에서 RxR 특징을 만들었을 때).
+- 이름 뒤의 인자는 `scripts/train.py`로 간다.
+- 진행은 `bash scripts/server/status.sh`에 다른 학습과 같이 나온다.
+- 연구실 PC의 실험과 비교하려면 같은 이름·같은 설정으로 돌린다. `RXR=1`은 PC에서 할 수 없는 조건이므로 이름을 따로 붙인다(예: `L0_r2r_rxr`).
+
+### 6.3 주행 평가 (연구실 PC)
+
+`<이름>.tar.gz`를 PC의 `/mnt/storage/light_nav/`로 옮긴 다음 PC에서 실행한다.
+
+```bash
+tar -xzf <이름>.tar.gz -C runs && bash scripts/local_drive.sh <이름>
+```
+
+val_seen 100개와 val_unseen 100개를 주행하고 D와 같은 에피소드로 비교한 표를 낸다(약 20분).
+
+### 6.4 DAgger 데이터 올리기
+
+수집은 PC에서만 된다(`scripts/dagger_round.sh`). 끝난 회차는 PC에서 `bash scripts/pack_dagger.sh 1`로 묶는다(`dagger1.tar`, 약 5 GB). 서버의 `~/light_nav`에 올려 `tar -xf dagger1.tar`로 풀면 6.2의 `--extra`로 쓸 수 있다.
+
 ## 진단
 
 학습된 모델이 지시문과 영상을 실제로 쓰는지 잰다(검증 5,000개, 모델마다 수십 분, GPU 약 4 GB).

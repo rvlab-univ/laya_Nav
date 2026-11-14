@@ -282,8 +282,18 @@ def target_distribution(label: int, teacher: Optional[np.ndarray] = None, alpha:
     return t
 
 
-def load_frames(root: str, prefix: str, n_frames: int, transform, num_frames: int = NUM_FRAMES, flip: bool = False):
-    """`(pixels [k, 3, H, W], slots)` of the frames NaVILA's rule picks after `n_frames` frames; black padding left out."""
+def frames_key(frames) -> str:
+    """Where a sample keeps what `load_frames` returned: decoded images or stored features."""
+    return "feats" if isinstance(frames, dict) else "pixels"
+
+
+def load_frames(root, prefix: str, n_frames: int, transform, num_frames: int = NUM_FRAMES, flip: bool = False):
+    """`(pixels [k, 3, H, W], slots)` of the frames NaVILA's rule picks after `n_frames` frames; black padding left out.
+    With a `lightnav.features.FeatureStore` as `root`, the first item is the stored features of those frames
+    ({"grid", "pooled"}) and no image is decoded."""
+    if hasattr(root, "frames"):
+        picked = [(slot, frame) for slot, frame in enumerate(frame_slots(n_frames, num_frames)) if frame >= 0]
+        return root.frames(prefix, [f for _, f in picked], flip), [s for s, _ in picked]
     images, slots = [], []
     for slot, frame in enumerate(frame_slots(n_frames, num_frames)):
         if frame < 0:
@@ -333,7 +343,7 @@ class NavDataset(Dataset):
         pixels, slots = load_frames(self.image_roots[r.source], r.prefix, r.n_frames, self.transform,
                                     self.cfg.num_frames, flip)
         ids, markers = self.encode_text(instruction)
-        out = {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots,
+        out = {"ids": ids, "markers": markers, frames_key(pixels): pixels, "slots": slots,
                "target": target_distribution(label, teacher, self.alpha), "label": label, "key": r.key,
                "mirrored": flip}
         if self.negative is not None and self.negative_prob > 0 and random.random() < self.negative_prob:
@@ -383,10 +393,13 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
         "text_len": text_len,
         "marker_pos": marker_pos,
         "marker_mask": marker_pos >= 0,
-        "pixels": torch.cat([b["pixels"] for b in batch]),
         "frame_owner": torch.tensor([i for i, b in enumerate(batch) for _ in b["slots"]], dtype=torch.long),
         "frame_slot": torch.tensor([s for b in batch for s in b["slots"]], dtype=torch.long),
     }
+    if "feats" in batch[0]:
+        out["feats"] = {k: torch.cat([b["feats"][k] for b in batch]) for k in batch[0]["feats"]}
+    else:
+        out["pixels"] = torch.cat([b["pixels"] for b in batch])
     if any("tag_override" in b for b in batch):
         # stand-in tag words (vocabulary indices) for some rows; -1 = the row's own tags
         k = max(len(b.get("tag_override", ())) for b in batch)

@@ -223,9 +223,9 @@ class MatchDataset(Dataset):
         label = YES if kind == "pos" else NO
         target = np.zeros(NUM_ACTIONS, dtype=np.float32)
         target[label] = 1.0
-        out = {"ids": ids, "markers": markers, "pixels": pixels, "slots": slots, "target": target, "label": label,
-               "key": "match:%s:%s:%s" % (route.source, route.episode, kind), "mirrored": False, "task": "match",
-               "kind": kind}
+        out = {"ids": ids, "markers": markers, D.frames_key(pixels): pixels, "slots": slots, "target": target,
+               "label": label, "key": "match:%s:%s:%s" % (route.source, route.episode, kind), "mirrored": False,
+               "task": "match", "kind": kind}
         if self.synthetic > 0 and not self.fixed:
             rng = random.Random(random.getrandbits(64))
             if rng.random() < self.synthetic:
@@ -238,16 +238,21 @@ class MatchDataset(Dataset):
 
 class OtherInstruction:
     """`(row, rng) -> instruction` of a random episode of the same source whose path differs from the row's: the
-    negative of the instruction contrast loss (scripts/train.py --contrast). Picklable, for DataLoader workers."""
+    negative of the instruction contrast loss (scripts/train.py --contrast). Picklable, for DataLoader workers.
 
-    def __init__(self, routes: Sequence[Route]):
+    `alias`: sources without routes of their own that are other walks of another source's episodes (DAgger rollouts
+    of R2R, `{"dagger1": "r2r"}`); their rows are treated as that source's."""
+
+    def __init__(self, routes: Sequence[Route], alias: Optional[Dict[str, str]] = None):
         self.path = {(r.source, r.episode): r.path for r in routes}
         self.pool = defaultdict(list)
         for r in routes:
             self.pool[r.source].append((r.path, r.instruction))
+        self.alias = dict(alias or {})
 
     def __call__(self, row: D.Row, rng: random.Random) -> Optional[str]:
-        pool, own = self.pool.get(row.source), self.path.get((row.source, row.episode))
+        source = self.alias.get(row.source, row.source)
+        pool, own = self.pool.get(source), self.path.get((source, row.episode))
         if not pool:
             return None
         for _ in range(100):

@@ -40,4 +40,8 @@ def summarize(labels: np.ndarray, probs: np.ndarray) -> Dict:
         "stop_recall": float(hit / is_stop.sum()) if is_stop.any() else None,
         "ece": ece(probs.max(-1), correct),
         "recall": {KEYS[i]: float(correct[labels == i].mean()) for i in range(NUM_ACTIONS) if (labels == i).any()},
+        # what the best constant answer scores on these samples: a model at this level has learned only the prior
+        # (N1, N2 and D sat within 0.03 of constant_kind_acc for the whole of their training)
+        "constant_acc": float(np.bincount(labels, minlength=NUM_ACTIONS).max() / len(labels)),
+        "constant_kind_acc": float(np.bincount(_KIND[labels]).max() / len(labels)),
     }

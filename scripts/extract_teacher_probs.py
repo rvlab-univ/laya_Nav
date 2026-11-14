@@ -69,7 +69,7 @@ def load_samples(args):
 
 def read_parts(out_dir):
     parts = sorted(glob.glob(os.path.join(out_dir, "shard_*", "part_*.npz")))
-    return [np.load(p, allow_pickle=False) for p in parts]
+    return [np.load(p, allow_pickle=False) for p in parts if not p.endswith(".tmp.npz")]   # not one being written
 
 
 def save_part(shard_dir, rec):

@@ -63,9 +63,11 @@ for path in sorted(glob.glob(os.path.join(runs_dir, "*", "log.jsonl"))):
         line += " | contrast gap %+.3f" % train["contrast_gap"]
     if val:
         v = val["val"]
-        line += " | val acc %.3f, kind acc %.3f, stop recall %s (step %d)" % (
-            v["acc"], v["kind_acc"], "%.2f" % v["stop_recall"] if v.get("stop_recall") is not None else "-",
-            val["step"])
+        # in brackets: what one constant answer scores on the same samples (older logs do not have it)
+        base = lambda k: " (constant %.3f)" % v[k] if v.get(k) is not None else ""   # noqa: E731
+        line += " | val acc %.3f%s, kind acc %.3f%s, stop recall %s (step %d)" % (
+            v["acc"], base("constant_acc"), v["kind_acc"], base("constant_kind_acc"),
+            "%.2f" % v["stop_recall"] if v.get("stop_recall") is not None else "-", val["step"])
         if v.get("text_same") is not None:
             # same answer with another sample's instruction: 0.9 or more = the instruction is not read
             line += "\n%-21s same answer with another instruction %.2f%s" % (
