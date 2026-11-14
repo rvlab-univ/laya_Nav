@@ -1,0 +1,252 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1010" viewBox="0 0 1600 1010">
+<defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8C959F"/></marker><marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#B5473A"/></marker></defs>
+<rect x="0" y="0" width="1600" height="1010" rx="0" fill="#FFFFFF" stroke="none" stroke-width="0" />
+<text x="30" y="30" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#57606A" text-anchor="start">INFERENCE (the student alone drives)</text>
+<rect x="30" y="46" width="300" height="118" rx="8" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.5" />
+<text x="46" y="72" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Instruction</text>
+<text x="46" y="100" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="normal" font-style="italic" fill="#57606A" text-anchor="start">“Walk past the sofa, then</text>
+<text x="46" y="122" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="normal" font-style="italic" fill="#57606A" text-anchor="start">stop at the bedroom door.”</text>
+<text x="46" y="150" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">same text as NaVILA's prompt</text>
+<text x="360" y="62" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Observations: 8 frames, sampled as NaVILA does</text>
+<rect x="360" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="361,129 413,129 398.88,107.32 375.12,107.32" fill="#C3CCD6"/>
+<rect x="397.8" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="422" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="423,129 475,129 460.88,107.32 437.12,107.32" fill="#C3CCD6"/>
+<rect x="455.48" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="484" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="485,129 537,129 522.88,107.32 499.12,107.32" fill="#C3CCD6"/>
+<rect x="513.7" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="546" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="547,129 599,129 584.88,107.32 561.12,107.32" fill="#C3CCD6"/>
+<rect x="571.38" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="608" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="609,129 661,129 646.88,107.32 623.12,107.32" fill="#C3CCD6"/>
+<rect x="629.6" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="670" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="671,129 723,129 708.88,107.32 685.12,107.32" fill="#C3CCD6"/>
+<rect x="687.82" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="732" y="76" width="54" height="54" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="733,129 785,129 770.88,107.32 747.12,107.32" fill="#C3CCD6"/>
+<rect x="747.12" y="88.96" width="8.64" height="18.36" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="806" y="70" width="92" height="92" rx="3" fill="#DCE3EA" stroke="#7B8794" stroke-width="1" />
+<polygon points="807,161 897,161 872.24,123.36 831.76,123.36" fill="#C3CCD6"/>
+<rect x="844.64" y="92.08" width="14.72" height="31.28" rx="1" fill="#8D99A6" stroke="none" stroke-width="0" />
+<rect x="817.04" y="121.52" width="27.6" height="11.04" rx="2" fill="#A9B4BF" stroke="none" stroke-width="0" />
+<text x="573" y="150" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">7 past frames, evenly spaced from the start</text>
+<text x="852" y="180" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="middle">current frame</text>
+<rect x="30" y="210" width="300" height="84" rx="8" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.5" />
+<text x="46" y="236" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Laya question layout</text>
+<text x="46" y="258" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">ModernBERT tokenizer, ≤ 448 tokens</text>
+<text x="46" y="278" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">question · 10 options · state {instruction}</text>
+<line x1="180" y1="166" x2="180" y2="206" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="360" y="210" width="250" height="84" rx="8" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.5" />
+<text x="376" y="236" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">SigLIP2-B/16 vision encoder</text>
+<text x="376" y="258" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">224 px, shared by all frames</text>
+<text x="376" y="278" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">92.9M, pretrained</text>
+<line x1="565" y1="160" x2="520" y2="206" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="830" y1="164" x2="590" y2="208" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="632" y="210" width="196" height="38" rx="6" fill="#FFFFFF" stroke="#2F6DB5" stroke-width="1.2" />
+<text x="730" y="234" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="middle">current: 14×14 = 196</text>
+<rect x="632" y="256" width="196" height="38" rx="6" fill="#FFFFFF" stroke="#2F6DB5" stroke-width="1.2" />
+<text x="730" y="280" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="middle">past: pool → 7×7 = 49 each</text>
+<line x1="611" y1="240" x2="630" y2="232" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="611" y1="262" x2="630" y2="272" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="850" y="210" width="270" height="84" rx="8" fill="#FFF0DE" stroke="#C8741E" stroke-width="1.5" />
+<text x="866" y="236" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Projection MLP 768 → 1024</text>
+<text x="866" y="258" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">+ frame-slot emb. (slot 7 = current)</text>
+<text x="866" y="278" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">+ 2-D position emb. · new, 2.1M</text>
+<line x1="829" y1="232" x2="848" y2="240" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="829" y1="274" x2="848" y2="266" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="30" y="360" width="44" height="48" rx="4" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.2" />
+<text x="52" y="389" font-family="Liberation Mono, Courier New, monospace" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">[CLS]</text>
+<rect x="77" y="360" width="78" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<text x="116" y="389" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="12.5" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="middle">question</text>
+<rect x="158" y="360" width="44" height="48" rx="4" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.2" />
+<text x="180" y="389" font-family="Liberation Mono, Courier New, monospace" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">[SEP]</text>
+<rect x="205" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="221" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="237" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="253" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="269" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="285" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="301" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="317" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="333" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="349" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="365" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="381" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="397" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="413" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="429" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="445" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="461" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="477" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="493" y="360" width="13" height="48" rx="3" fill="#6A4C9C" stroke="#6A4C9C" stroke-width="1" />
+<rect x="509" y="360" width="13" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<rect x="525" y="360" width="44" height="48" rx="4" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.2" />
+<text x="547" y="389" font-family="Liberation Mono, Courier New, monospace" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">[SEP]</text>
+<rect x="572" y="360" width="150" height="48" rx="4" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.2" />
+<text x="647" y="389" font-family="Liberation Mono, Courier New, monospace" font-size="12.5" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="middle">{"instruction": …}</text>
+<rect x="725" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="758" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="791" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="824" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="857" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="890" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="923" y="360" width="30" height="48" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.2" />
+<rect x="956" y="360" width="100" height="48" rx="4" fill="#BCD3EE" stroke="#2F6DB5" stroke-width="1.4" />
+<rect x="1059" y="360" width="44" height="48" rx="4" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.2" />
+<text x="1081" y="389" font-family="Liberation Mono, Courier New, monospace" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">[SEP]</text>
+<path d="M205,357 L205,352 L522,352 L522,357" fill="none" stroke="#57606A" stroke-width="1.1"/>
+<text x="363.5" y="346" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">10 options, one [M] marker each</text>
+<path d="M572,357 L572,352 L722,352 L722,357" fill="none" stroke="#57606A" stroke-width="1.1"/>
+<text x="647" y="346" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">state = instruction</text>
+<path d="M725,357 L725,352 L953,352 L953,357" fill="none" stroke="#57606A" stroke-width="1.1"/>
+<text x="839" y="346" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">7 past frames × 49</text>
+<path d="M956,357 L956,352 L1056,352 L1056,357" fill="none" stroke="#57606A" stroke-width="1.1"/>
+<text x="1006" y="346" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">current: 196</text>
+<text x="30" y="346" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Input sequence</text>
+<text x="363.5" y="428" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">positions 16 … 90</text>
+<text x="890.5" y="428" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">image tokens (≤ 539), inserted before the last [SEP]</text>
+<text x="236" y="428" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">text ≈ 140 tokens</text>
+<line x1="180" y1="296" x2="180" y2="330" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<path d="M985,296 L985,318 L890.5,318 L890.5,330" fill="none" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="30" y="450" width="1090" height="112" rx="8" fill="#E8F3EC" stroke="#2E7D4F" stroke-width="1.5" />
+<text x="48" y="478" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="17" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">ModernBERT-large encoder</text>
+<text x="300" y="478" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">28 layers · d = 1024 · RoPE · 394.8M · pretrained (Laya checkpoint or raw ModernBERT)</text>
+<rect x="48" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<text x="60.5" y="556" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">0</text>
+<rect x="76" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="104" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="132" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="160" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="188" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="216" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="244" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="272" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="300" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="328" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="356" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="384" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="412" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="440" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="468" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="496" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="524" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="552" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="580" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="608" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="636" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="664" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="692" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="720" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="748" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="776" y="498" width="25" height="44" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<rect x="804" y="498" width="25" height="44" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1.2" />
+<text x="816.5" y="556" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">27</text>
+<rect x="854" y="502" width="16" height="16" rx="3" fill="#2E7D4F" stroke="#2E7D4F" stroke-width="1" />
+<text x="878" y="515" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">global attention (10 layers)</text>
+<rect x="854" y="526" width="16" height="16" rx="3" fill="#FFFFFF" stroke="#2E7D4F" stroke-width="1.2" />
+<text x="878" y="539" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">local window ±64 (18 layers)</text>
+<line x1="180" y1="436" x2="180" y2="448" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<line x1="890.5" y1="436" x2="890.5" y2="448" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="30" y="590" width="1090" height="54" rx="8" fill="#F0ECF8" stroke="#6A4C9C" stroke-width="1.5" />
+<text x="48" y="623" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="16" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Laya decision head</text>
+<text x="222" y="623" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">2 Transformer layers, full attention, 16 heads · 25.2M · read out only at the 10 [M] positions</text>
+<line x1="575" y1="562" x2="575" y2="588" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="135" y="676" width="457" height="44" rx="6" fill="#FFFFFF" stroke="#6A4C9C" stroke-width="1.3" />
+<text x="363.5" y="703" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13.5" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="middle">scorer MLP: one logit per [M] · 1.05M</text>
+<line x1="211.5" y1="644" x2="211.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="243.5" y1="644" x2="243.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="275.5" y1="644" x2="275.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="307.5" y1="644" x2="307.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="339.5" y1="644" x2="339.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="371.5" y1="644" x2="371.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="403.5" y1="644" x2="403.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="435.5" y1="644" x2="435.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="467.5" y1="644" x2="467.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="499.5" y1="644" x2="499.5" y2="674" stroke="#6A4C9C" stroke-width="1.2" marker-end="url(#ah)"/>
+<line x1="197.5" y1="870" x2="513.5" y2="870" stroke="#8C959F" stroke-width="1"/>
+<rect x="201.5" y="863.739" width="20" height="6.26087" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="211.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">stop</text>
+<rect x="233.5" y="859.565" width="20" height="10.4348" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="243.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">F25</text>
+<rect x="265.5" y="861.652" width="20" height="8.34783" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="275.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">F50</text>
+<rect x="297.5" y="849.13" width="20" height="20.8696" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="307.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">F75</text>
+<rect x="329.5" y="844.957" width="20" height="25.0435" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="339.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">L15</text>
+<rect x="361.5" y="774" width="20" height="96" rx="2" fill="#6A4C9C" stroke="none" stroke-width="0" />
+<text x="371.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="middle">L30</text>
+<rect x="393.5" y="851.217" width="20" height="18.7826" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="403.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">L45</text>
+<rect x="425.5" y="861.652" width="20" height="8.34783" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="435.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">R15</text>
+<rect x="457.5" y="861.652" width="20" height="8.34783" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="467.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">R30</text>
+<rect x="489.5" y="863.739" width="20" height="6.26087" rx="2" fill="#CFC6E2" stroke="none" stroke-width="0" />
+<text x="499.5" y="886" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="11.5" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="middle">R45</text>
+<text x="193.5" y="768" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13.5" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">softmax over NaVILA's 10 answers</text>
+<rect x="560" y="768" width="270" height="92" rx="8" fill="#FFFFFF" stroke="#6A4C9C" stroke-width="1.4" />
+<text x="576" y="794" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">argmax → NaVILA sentence</text>
+<text x="576" y="818" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#57606A" text-anchor="start">“The next action is</text>
+<text x="576" y="840" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="normal" font-style="italic" fill="#57606A" text-anchor="start">turn left 30 degree.”</text>
+<line x1="521.5" y1="814" x2="556" y2="814" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="850" y="768" width="270" height="92" rx="8" fill="#FFFFFF" stroke="#8C959F" stroke-width="1.4" />
+<text x="866" y="794" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">NaVILA executor (unchanged)</text>
+<text x="866" y="818" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">→ 2 × turn-left 15°</text>
+<text x="866" y="840" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">Habitat VLN-CE / Go2 locomotion</text>
+<line x1="832" y1="814" x2="846" y2="814" stroke="#8C959F" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="30" y="912" width="1090" height="70" rx="8" fill="#F6F8FA" stroke="#D0D7DE" stroke-width="1" />
+<text x="48" y="940" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="17" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">516.3M parameters</text>
+<text x="222" y="940" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">= encoder 394.8M + head and scorer 26.5M + vision 92.9M + new 2.1M</text>
+<text x="48" y="966" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">NaVILA 8B: 15.5× more. One forward pass per decision, no token decoding · 54.8 ms median on an RTX 5060 Ti (R2R-CE)</text>
+<rect x="1150" y="20" width="420" height="962" rx="12" fill="#FCF1EF" stroke="#B5473A" stroke-width="1.6" stroke-dasharray="7 5" />
+<text x="1170" y="52" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#B5473A" text-anchor="start">DISTILLATION: NaVILA 8B → student</text>
+<text x="1170" y="74" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">teacher distillation + auxiliary tasks · not used when driving</text>
+<rect x="1168" y="94" width="384" height="150" rx="8" fill="#FFFFFF" stroke="#B5473A" stroke-width="1.2" />
+<text x="1184" y="120" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#B5473A" text-anchor="start">Teacher: NaVILA 8B (frozen)</text>
+<text x="1184" y="144" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">Scores all 10 answer sentences on one</text>
+<text x="1184" y="165" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">KV-cached prompt: same 8 frames and</text>
+<text x="1184" y="186" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">instruction → p_teacher over the 10 answers.</text>
+<text x="1184" y="207" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">Reads the instruction, so the 3 instructions</text>
+<text x="1184" y="228" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">of one R2R path get different distributions.</text>
+<rect x="1168" y="264" width="384" height="128" rx="8" fill="#FFFFFF" stroke="#D9B3AD" stroke-width="1.2" />
+<text x="1184" y="290" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">1 · Navigation decision (80%)</text>
+<text x="1184" y="314" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">target A: one-hot NaVILA label</text>
+<text x="1184" y="335" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">target B: (1 − α)·one-hot + α·p_teacher, α = 0.5</text>
+<text x="1184" y="356" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">over the 10 [M] options</text>
+<text x="1184" y="377" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">left–right mirror with p = 0.5 (frames, text, label)</text>
+<path d="M1360,244 L1360,262" fill="none" stroke="#B5473A" stroke-width="1.6" marker-end="url(#ah)"/>
+<rect x="1168" y="412" width="384" height="236" rx="8" fill="#FFFFFF" stroke="#D9B3AD" stroke-width="1.2" />
+<text x="1184" y="438" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">2 · Instruction–route matching (20%)</text>
+<text x="1184" y="462" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">same model, same layout, whole route</text>
+<text x="1184" y="483" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="italic" fill="#1F2328" text-anchor="start">Q: “Does the instruction describe this route?”</text>
+<text x="1184" y="504" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">options: yes / no (8 unused markers masked)</text>
+<text x="1184" y="525" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">negatives:</text>
+<text x="1184" y="546" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">· landmark swap: sofa → bed (only the frames tell)</text>
+<text x="1184" y="567" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">· instruction of another path</text>
+<text x="1184" y="588" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">why: R2R labels are identical for the 3</text>
+<text x="1184" y="609" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">instructions of a path, so labels alone never</text>
+<text x="1184" y="630" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">reward reading the instruction</text>
+<rect x="1168" y="668" width="384" height="108" rx="8" fill="#FFFFFF" stroke="#D9B3AD" stroke-width="1.2" />
+<text x="1184" y="694" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="15" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Loss: Laya RLCD</text>
+<text x="1184" y="718" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">soft cross-entropy + policy gradient on</text>
+<text x="1184" y="739" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">noisy logits, σ 0.4 → 0.1</text>
+<text x="1184" y="760" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#57606A" text-anchor="start">same loss for both tasks (masked options)</text>
+<text x="1170" y="804" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="14" font-weight="bold" font-style="normal" fill="#1F2328" text-anchor="start">Legend</text>
+<rect x="1172" y="818" width="22" height="16" rx="3" fill="#E7F0FA" stroke="#2F6DB5" stroke-width="1.3" />
+<text x="1204" y="831" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">pretrained vision (SigLIP2)</text>
+<rect x="1172" y="844" width="22" height="16" rx="3" fill="#E8F3EC" stroke="#2E7D4F" stroke-width="1.3" />
+<text x="1204" y="857" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">pretrained language encoder</text>
+<rect x="1172" y="870" width="22" height="16" rx="3" fill="#F0ECF8" stroke="#6A4C9C" stroke-width="1.3" />
+<text x="1204" y="883" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">Laya head, scorer, [M] markers</text>
+<rect x="1172" y="896" width="22" height="16" rx="3" fill="#FFF0DE" stroke="#C8741E" stroke-width="1.3" />
+<text x="1204" y="909" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">new parameters (2.1M)</text>
+<rect x="1172" y="922" width="22" height="16" rx="3" fill="#F3F4F6" stroke="#8C959F" stroke-width="1.3" />
+<text x="1204" y="935" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">text tokens</text>
+<rect x="1172" y="948" width="22" height="16" rx="3" fill="#FFFFFF" stroke="#B5473A" stroke-width="1.3" stroke-dasharray="4 3" />
+<text x="1204" y="961" font-family="Liberation Sans, Arial, Helvetica, sans-serif" font-size="13" font-weight="normal" font-style="normal" fill="#1F2328" text-anchor="start">distillation (training only)</text>
+</svg>
