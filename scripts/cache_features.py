@@ -78,7 +78,7 @@ def main():
             missing += 1
     print("%s: %d episodes, %d stored already, %d to do, %d without frames on disk"
           % (args.source, len(need), len(need) - len(todo) - missing, len(todo), missing), flush=True)
-    transform = D.make_image_transform(cfg.image_size, cfg.image_mean, cfg.image_std)
+    transform = D.make_image_transform(vision.config.image_size, cfg.image_mean, cfg.image_std)   # 224 or 256 px
     loader = DataLoader(Episodes(todo, args.frames, transform), batch_size=None, shuffle=False,
                         num_workers=args.workers)
     started, frames = time.time(), 0

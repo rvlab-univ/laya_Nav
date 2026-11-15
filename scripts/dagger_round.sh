@@ -4,8 +4,12 @@
 #   nohup bash scripts/dagger_round.sh 1 runs/D/last > logs/dagger_round1.log 2>&1 &
 # Round n runs the expert's answer with probability 0.75^n (VLN-CE's schedule). Stop and rerun at any time: finished
 # rollouts are kept. About 5 s per rollout: 7 hours for the default 5,000, and about 1 MB of features each.
+# The frames stay in data/dagger/round<n>/frames (about 10 GB a round), so another encoder can store its features
+# later without driving again; DELETE_FRAMES=1 removes each rollout's frames once its features are stored (round 1 did).
 # Output: data/dagger/round<n>/annotations.json and data/features/siglip2_g2/dagger<n>/, for
 #   scripts/train.py --features data/features/siglip2_g2 --extra dagger<n> data/dagger/round<n>/annotations.json
+# The features are SigLIP2 B/16 224 px at a 2 x 2 grid (run D's); for the 256 px students of design_C_review.md 5.5:
+#   VISION=google/siglip2-base-patch16-256 GRID=4 FEATURES=data/features/siglip2_256_g4 bash scripts/dagger_round.sh ...
 set -u
 ROUND="${1:?round number (1, 2, ...)}"
 CKPT="${2:?checkpoint folder of the student that drives}"
@@ -16,6 +20,8 @@ cd "$(dirname "$0")/.."
 export HF_HOME="$PWD/assets/hf_cache"
 OUT="data/dagger/round$ROUND"
 FEATURES="${FEATURES:-data/features/siglip2_g2}"
+VISION="${VISION:-google/siglip2-base-patch16-224}"
+GRID="${GRID:-2}"
 BETA="$(env/bin/python -c "print(round(0.75 ** $ROUND, 4))")"
 mkdir -p logs "$OUT"
 
@@ -33,7 +39,8 @@ while true; do
         --episodes "$EPISODES" --seed "$ROUND" --limit "$CHUNK" 2>&1 | grep --line-buffered -E "rollouts|so far|Error|Traceback"
     code=${PIPESTATUS[0]}
     env/bin/python scripts/cache_features.py --source "dagger$ROUND" --ann "$OUT/annotations.json" \
-        --frames "$OUT/frames" --out "$FEATURES" --delete_frames 2>&1 | grep --line-buffered -E "episodes|Error|Traceback"
+        --frames "$OUT/frames" --out "$FEATURES" --vision_encoder "$VISION" --grid "$GRID" \
+        ${DELETE_FRAMES:+--delete_frames} 2>&1 | grep --line-buffered -E "episodes|Error|Traceback"
     [ "$code" = 3 ] && break
     [ "$code" != 0 ] && { echo "collection stopped with code $code"; exit 1; }
 done

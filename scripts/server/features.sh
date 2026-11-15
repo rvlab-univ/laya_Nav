@@ -4,12 +4,16 @@
 #   nohup bash scripts/server/features.sh > logs/features.log 2>&1 &                      # R2R: 601k frames, 9 GB
 #   SOURCES="r2r rxr" nohup bash scripts/server/features.sh > logs/features.log 2>&1 &    # + RxR: 835k frames, 13 GB
 # The speed is set by JPEG decoding on the CPU (260 frames/s with 8 workers on the lab PC: R2R in 40 minutes).
+# Another encoder or grid goes to its own folder (design_C_review.md 5.5, 256 px with a 4 x 4 grid, 31 GB for R2R):
+#   VISION=google/siglip2-base-patch16-256 GRID=4 FEATURES=data/features/siglip2_256_g4 bash scripts/server/features.sh
 # Rerun after a stop: stored episodes are skipped. NaVILA's frames are kept. A source is marked complete
 # (<features>/<source>.done) only when every episode of its annotations is stored.
 source "$(dirname "$0")/common.sh"
 use_env "$STUDENT_ENV"
 limit_threads "${THREADS:-4}"
 FEATURES="${FEATURES:-$DATA/features/siglip2_g2}"
+VISION="${VISION:-google/siglip2-base-patch16-224}"
+GRID="${GRID:-2}"
 QUOTA="$(cpu_quota)"
 W=$(( QUOTA - 2 )); [ "$W" -gt 16 ] && W=16; [ "$W" -lt 2 ] && W=2
 gpu_report
@@ -20,9 +24,10 @@ for s in ${SOURCES:-r2r}; do
         rxr) dir=RxR ;;
         *) echo "unknown source: $s (r2r, rxr)"; exit 1 ;;
     esac
-    log "$s: features of $NAVILA_DATA/$dir/train -> $FEATURES/$s ($W workers)"
+    log "$s: features of $NAVILA_DATA/$dir/train -> $FEATURES/$s ($VISION, grid $GRID, $W workers)"
     python scripts/cache_features.py --source "$s" --ann "$NAVILA_DATA/$dir/annotations.json" \
-        --frames "$NAVILA_DATA/$dir/train" --out "$FEATURES" --workers "${WORKERS:-$W}"
+        --frames "$NAVILA_DATA/$dir/train" --out "$FEATURES" --vision_encoder "$VISION" --grid "$GRID" \
+        --workers "${WORKERS:-$W}"
     python - "$s" "$NAVILA_DATA/$dir/annotations.json" "$FEATURES" <<'PY'
 import sys
 sys.path.insert(0, ".")

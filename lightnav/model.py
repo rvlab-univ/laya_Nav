@@ -344,6 +344,7 @@ def build(cfg: LayaNativeConfig):
         dm = build_model({"encoder": cfg.encoder, "head_layers": cfg.head_layers})
         tok = AutoTokenizer.from_pretrained(cfg.encoder)
     siglip = AutoModel.from_pretrained(cfg.vision_encoder)
+    cfg.image_size = _vision_tower(siglip).config.image_size       # 224 or 256: the frames are resized to it
     if (cfg.tags_current or cfg.tags_history) and not cfg.tag_vocab:
         cfg.tag_vocab = tag_vocabulary()
     model = LayaNative(cfg, dm, siglip)
@@ -366,6 +367,72 @@ def save(model: LayaNative, tok, path: str) -> None:
             "n_act": model.dm.act_head[-1].out_features, "num_actions": NUM_ACTIONS}
     with open(os.path.join(path, "lightnav_config.json"), "w") as f:
         json.dump(meta, f, indent=2)
+
+
+def checkpoint_config(path: str) -> Dict:
+    """The `LayaNativeConfig` fields of a directory written by `save`, as a dict."""
+    with open(os.path.join(path, "lightnav_config.json")) as f:
+        return json.load(f)["config"]
+
+
+def _resize_positions(pos: torch.Tensor, n: int) -> torch.Tensor:
+    """Position embeddings [g * g, d] of a square grid (row-major) interpolated to [n, d] (bilinear)."""
+    g0, g1 = int(round(pos.shape[0] ** 0.5)), int(round(n ** 0.5))
+    if g0 * g0 != pos.shape[0] or g1 * g1 != n:
+        raise ValueError("position embeddings of %d tokens to %d: not square grids" % (pos.shape[0], n))
+    x = pos.float().T.reshape(1, -1, g0, g0)
+    x = F.interpolate(x, size=(g1, g1), mode="bilinear", align_corners=False)
+    return x.reshape(-1, n).T.to(pos.dtype)
+
+
+@torch.no_grad()
+def init_from(model: LayaNative, path: str) -> List[str]:
+    """Load a checkpoint written by `save` into `model` as the start of a run (scripts/train.py --init). The two may
+    differ in two ways (design_C_review.md 5.5):
+
+    - the vision encoder (same feature size, e.g. SigLIP2 B/16 at 224 px -> 256 px): the vision tower and the tag
+      table stay `model`'s (made by `build` from the new encoder), and the tag statistics must be set again from
+      training frames, because the scores come from another encoder;
+    - the current frame's grid (e.g. 2 x 2 -> 4 x 4): its position embeddings are interpolated from the checkpoint's.
+
+    Everything else (language encoder, head, scorer, projection, frame and past-frame embeddings, tag types) must
+    have the same shape and is copied. Returns a note for each part not copied as it is (empty: a plain copy)."""
+    from safetensors.torch import load_file
+
+    old = checkpoint_config(path)
+    sd = load_file(os.path.join(path, "model.safetensors"))
+    own = model.state_dict()
+    if model.tagging and old.get("tag_vocab") != model.cfg.tag_vocab:
+        raise ValueError("%s has other tag phrases than this model" % path)
+    skip, notes = set(), []
+    if old["vision_encoder"] != model.cfg.vision_encoder:
+        skip = {k for k in (*own, *sd) if k.startswith("vision.")} | {"tag_text", "tag_mu", "tag_sd"}
+        notes.append("vision encoder %s -> %s: the vision tower and tag table are the new encoder's, the tag "
+                     "statistics are to be set again" % (old["vision_encoder"], model.cfg.vision_encoder))
+    extra = sorted(set(sd) - set(own) - skip)
+    missing = sorted(set(own) - set(sd) - skip)
+    if extra or missing:
+        raise ValueError("%s does not fit this model: %d extra tensors (%s), %d missing (%s)"
+                         % (path, len(extra), extra[:3], len(missing), missing[:3]))
+    new = {}
+    for k, v in own.items():
+        if k in skip:
+            continue
+        w = sd[k]
+        if k == "pos_cur" and w.shape != v.shape:
+            w = _resize_positions(w, v.shape[0])
+            notes.append("current frame %s -> %s tokens: position embeddings interpolated"
+                         % (_grid_name(sd[k].shape[0]), _grid_name(v.shape[0])))
+        elif w.shape != v.shape:
+            raise ValueError("%s: %s in %s, %s here" % (k, tuple(w.shape), path, tuple(v.shape)))
+        new[k] = w
+    model.load_state_dict(new, strict=False)
+    return notes
+
+
+def _grid_name(n: int) -> str:
+    g = int(round(n ** 0.5))
+    return "%d x %d" % (g, g)
 
 
 def load(path: str):

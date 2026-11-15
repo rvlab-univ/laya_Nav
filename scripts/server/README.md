@@ -198,6 +198,27 @@ val_seen 100개와 val_unseen 100개를 주행하고 D와 같은 에피소드로
 
 수집은 PC에서만 된다(`scripts/dagger_round.sh`). 끝난 회차는 PC에서 `bash scripts/pack_dagger.sh 1`로 묶는다(`dagger1.tar`, 약 5 GB, 체크섬 `dagger1.tar.sha256`도 같이 만든다). 둘 다 서버의 `~/light_nav`에 올린다. `l_runs.sh`는 체크섬을 확인하고 알아서 푼다. 하나씩 돌릴 때는 `sha256sum -c dagger1.tar.sha256`이 `OK`인지 본 뒤 `tar -xf dagger1.tar`로 풀면 6.2의 `--extra`로 쓸 수 있다.
 
+### 6.5 현재 프레임 토큰 2×2 → 4×4 (L 결과를 본 뒤)
+
+`design_C_review.md` 5.5절의 (가)와 (나)다. 256 px 영상 인코더(`google/siglip2-base-patch16-256`)로 R2R 특징을 4×4 격자로 다시 만들고, 둘 다 `runs/D/last`에서 3,000 step 학습한다.
+
+```bash
+cd ~/light_nav && git pull
+nohup bash scripts/server/grid_runs.sh > logs/grid_runs.log 2>&1 &                          # L0가 가장 좋을 때
+nohup bash scripts/server/grid_runs.sh --teacher runs/teacher > logs/grid_runs.log 2>&1 &    # L2가 이겼을 때
+```
+
+| 차례 | 하는 일 | 시간 |
+|---|---|---|
+| 1 | R2R 특징, 256 px, 4×4 격자 → `data/features/siglip2_256_g4` (약 30 GB). `r2r.done`이 있으면 건너뜀 | 약 40분~1시간 |
+| 2 | `G2_256` (가): 현재 프레임 2×2. 인코더만 바뀐 대조군 | 약 2.5시간 |
+| 3 | `G4_256` (나): 현재 프레임 4×4 (영상 토큰 모두 23개) | 약 2.5시간 |
+
+- D에서 시작할 때 영상 인코더와 태그 표는 새 인코더 것을 쓰고, 태그 점수 통계는 학습 프레임에서 다시 잰다. 4×4 위치 임베딩은 D의 2×2를 늘려서 시작한다. 로그 첫머리의 `weights from runs/D/last` 아래 두 줄이 이것이다.
+- 끝나면 `G2_256.tar.gz`, `G4_256.tar.gz`를 6.3처럼 PC에서 주행한다.
+- **L1(DAgger)이 이겼을 때:** DAgger 1회차는 프레임을 지웠으므로 PC에서 다시 주행해 새 인코더 특징을 만들어 올려야 한다. 그 전에 `--extra dagger1 ...`을 주면 스크립트가 바로 멈춘다.
+- 기존 224 px 특징(`siglip2_g2`)과 실험은 건드리지 않는다.
+
 ## 진단
 
 학습된 모델이 지시문과 영상을 실제로 쓰는지 잰다(검증 5,000개, 모델마다 수십 분, GPU 약 4 GB).

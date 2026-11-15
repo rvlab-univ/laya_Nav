@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 from lightnav import data as D                                   # noqa: E402
 from lightnav import tasks as T                                  # noqa: E402
 from lightnav.metrics import summarize                           # noqa: E402
-from lightnav.model import LayaNativeConfig, build, save         # noqa: E402
+from lightnav.model import LayaNativeConfig, build, checkpoint_config, init_from, save   # noqa: E402
 
 
 def parse_args():
@@ -43,8 +43,13 @@ def parse_args():
                         "a source name, its annotations.json and, without --features, its frame folder. All of it "
                         "is training data: no part in the validation split or in the matching task. Repeatable.")
     p.add_argument("--init", default=None,
-                   help="start from the weights of this checkpoint folder (runs/D/last) with a new optimizer; the "
-                        "model settings (--tags, --grids, --encoder) must be the checkpoint's")
+                   help="start from the weights of this checkpoint folder (runs/D/last) with a new optimizer. "
+                        "--tags, the past-frame grid and --encoder must be the checkpoint's; the current-frame grid "
+                        "and --vision_encoder (same feature size) may differ (lightnav.model.init_from)")
+    p.add_argument("--vision_encoder", default=None,
+                   help="SigLIP2 vision encoder, e.g. google/siglip2-base-patch16-256 (16 x 16 patches, so --grids 4 "
+                        "works). Default: the encoder of --features, else of --init, else "
+                        "google/siglip2-base-patch16-224")
     p.add_argument("--split", default=None, help="validation split file; made at <out>/split.json when missing")
     p.add_argument("--r2r_scenes", default=None, help="VLN-CE train.json.gz, for a scene-level split of R2R")
     p.add_argument("--rxr_scenes", default=None, help="RxR rxr_train_guide.jsonl.gz, for a scene-level split of RxR")
@@ -269,17 +274,23 @@ def main():
     torch.manual_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    cfg = LayaNativeConfig(laya=None if args.laya == "none" else args.laya, encoder=args.encoder,
-                           tags_current=args.tags[0], tags_history=args.tags[1], cur_grid=args.grids[0],
-                           hist_grid=args.grids[1])
-    model, tok = build(cfg)
-    if args.init:
-        from safetensors.torch import load_file
-        model.load_state_dict(load_file(os.path.join(args.init, "model.safetensors")), strict=True)
-        print("weights from %s" % args.init, flush=True)
+    meta = None
     if args.features:
         with open(os.path.join(args.features, "meta.json")) as f:
             meta = json.load(f)
+    vision_name = (args.vision_encoder or (meta and meta["vision_encoder"])
+                   or (args.init and checkpoint_config(args.init)["vision_encoder"]) or LayaNativeConfig.vision_encoder)
+    cfg = LayaNativeConfig(laya=None if args.laya == "none" else args.laya, encoder=args.encoder,
+                           vision_encoder=vision_name, tags_current=args.tags[0], tags_history=args.tags[1],
+                           cur_grid=args.grids[0], hist_grid=args.grids[1])
+    model, tok = build(cfg)
+    print("vision encoder %s (%d px)" % (cfg.vision_encoder, cfg.image_size), flush=True)
+    new_vision = False
+    if args.init:
+        new_vision = checkpoint_config(args.init)["vision_encoder"] != cfg.vision_encoder
+        notes = init_from(model, args.init)
+        print("weights from %s%s" % (args.init, "".join("\n  " + n for n in notes)), flush=True)
+    if args.features:
         g = meta["grid"]
         if not args.freeze_vision:
             raise SystemExit("--features needs --freeze_vision: stored features are the frozen encoder's")
@@ -328,7 +339,7 @@ def main():
     collate = lambda b: D.collate(b, tok.pad_token_id)                                   # noqa: E731
     warm_loader = None
     if model.tagging:
-        if args.init:
+        if args.init and not new_vision:
             print("tag statistics kept from %s" % args.init, flush=True)       # the weights were trained with them
         else:
             set_tag_stats(model, train_rows, roots, cfg, args.tag_stats_frames, device, args.seed)
