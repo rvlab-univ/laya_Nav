@@ -155,7 +155,38 @@ SOURCES="r2r rxr" nohup bash scripts/server/features.sh > logs/features.log 2>&1
 
 모두 `runs/D/last`에서 시작해 3,000 step(64개씩)을 학습하고, 끝나면 `~/light_nav/<이름>.tar.gz`(약 1.8 GB)를 만든다.
 
-**L 실험 셋을 한 번에 (권장):**
+**다섯 실험을 셋씩 동시에 (권장, 2026-11-15):**
+
+```bash
+cd ~/light_nav && git pull
+nohup bash scripts/server/all_runs.sh > logs/all_runs.log 2>&1 &
+tail -n 30 logs/all_runs.log
+bash scripts/server/status.sh
+```
+
+- 먼저 224 px R2R 특징(6.1)과 교사 라벨 합치기를 한다(이미 있으면 건너뜀). 그다음 세 줄이 동시에 돈다.
+
+| 줄 | 차례 |
+|---|---|
+| 1 | `L0_r2r` → DAgger 1회차 확인과 풀기(6.4) → `L1_dagger1` |
+| 2 | `L2_teacher` → `G4_256` (3줄의 256 px 특징을 기다림) |
+| 3 | 256 px, 4×4 R2R 특징(약 30 GB, 6.5) → `G2_256` |
+
+- 다섯 실험 모두 R2R만 쓴다. `G2_256`과 `G4_256`은 L0와 같은 데이터다.
+- 한 실행은 H200을 다 쓰지 못한다(H200에서 2.2 s/step, 연구실 PC에서 3.0 s/step). 그래서 셋을 함께 돌린다. 예상 시간은 약 7시간이다(차례로 돌리면 14~15시간).
+- **속도 확인:** 시작하고 30분쯤 뒤 `status.sh`의 s/step을 본다. 6 s/step을 넘으면 동시에 돌리는 이득이 없다. 그때는 멈추고 차례로 돌린다(아래).
+- 실험마다 로그가 `logs/<이름>.log`에 따로 쌓인다. `logs/all_runs.log`에는 언제 무엇이 시작되고 끝났는지만 나온다.
+- 한 줄이 오류로 멈추면 그 줄만 멈추고 다른 줄은 계속 돈다. 고친 뒤 같은 명령을 다시 실행하면 끝난 실험은 건너뛰고 멈춘 실험은 이어서 한다.
+- GPU 여유 메모리가 90 GB보다 적으면 로그 첫머리에 경고가 나온다(다른 사람이 GPU를 쓰는 경우).
+
+멈추기, 그리고 차례로 돌리기로 바꾸기:
+
+```bash
+pkill -u irteam -f "scripts/server/(all_runs|experiment|features)\.sh|scripts/(train|cache_features)\.py"
+nohup bash -c "bash scripts/server/l_runs.sh && bash scripts/server/grid_runs.sh" > logs/serial_runs.log 2>&1 &
+```
+
+**L 실험 셋만 차례로:**
 
 ```bash
 cd ~/light_nav && git pull
@@ -198,9 +229,9 @@ val_seen 100개와 val_unseen 100개를 주행하고 D와 같은 에피소드로
 
 수집은 PC에서만 된다(`scripts/dagger_round.sh`). 끝난 회차는 PC에서 `bash scripts/pack_dagger.sh 1`로 묶는다(`dagger1.tar`, 약 5 GB, 체크섬 `dagger1.tar.sha256`도 같이 만든다). 둘 다 서버의 `~/light_nav`에 올린다. `l_runs.sh`는 체크섬을 확인하고 알아서 푼다. 하나씩 돌릴 때는 `sha256sum -c dagger1.tar.sha256`이 `OK`인지 본 뒤 `tar -xf dagger1.tar`로 풀면 6.2의 `--extra`로 쓸 수 있다.
 
-### 6.5 현재 프레임 토큰 2×2 → 4×4 (L 결과를 본 뒤)
+### 6.5 현재 프레임 토큰 2×2 → 4×4
 
-`design_C_review.md` 5.5절의 (가)와 (나)다. 256 px 영상 인코더(`google/siglip2-base-patch16-256`)로 R2R 특징을 4×4 격자로 다시 만들고, 둘 다 `runs/D/last`에서 3,000 step 학습한다.
+`design_C_review.md` 5.5절의 (가)와 (나)다. 256 px 영상 인코더(`google/siglip2-base-patch16-256`)로 R2R 특징을 4×4 격자로 다시 만들고, 둘 다 `runs/D/last`에서 3,000 step 학습한다. **`all_runs.sh`(6.2)가 이 둘을 L0와 같은 데이터로 함께 돌린다.** 아래는 따로 돌릴 때다.
 
 ```bash
 cd ~/light_nav && git pull

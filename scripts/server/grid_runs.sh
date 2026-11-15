@@ -12,7 +12,7 @@
 # its frames stored by this encoder in <features>/dagger1 first (the lab PC drives it again, 5.5).
 # A run whose <name>.tar.gz exists is finished and skipped; a stopped run resumes. Rerun the same command after a stop.
 source "$(dirname "$0")/common.sh"
-HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$(dirname "$0")/runs_lib.sh"
 export VISION="${VISION:-google/siglip2-base-patch16-256}" GRID="${GRID:-4}"
 export FEATURES="${FEATURES:-$DATA/features/siglip2_256_g4}"
 ARGS=("$@")
@@ -27,15 +27,6 @@ for ((i = 0; i < ${#ARGS[@]}; i++)); do
         fi
     fi
 done
-
-run() {  # name, train.py arguments
-    local name="$1"; shift
-    if [ -f "$ROOT/$name.tar.gz" ]; then
-        log "$name: finished before ($name.tar.gz is there), skipped"
-        return
-    fi
-    bash "$HERE/experiment.sh" "$name" "$@" "${ARGS[@]}"
-}
 
 log "step 3 (b): $VISION features on a $GRID x $GRID grid, then G2_256 and G4_256 (${STEPS:-3000} steps each)"
 if [ -f "$FEATURES/r2r.done" ]; then

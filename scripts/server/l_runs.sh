@@ -11,52 +11,9 @@
 # Rerun the same command after a stop. Arguments go to every scripts/train.py call. STEPS (3000), BATCH, ACCUM and
 # INIT work as in experiment.sh.
 source "$(dirname "$0")/common.sh"
-HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$(dirname "$0")/runs_lib.sh"
 export FEATURES="${FEATURES:-$DATA/features/siglip2_g2}"
 ARGS=("$@")
-
-run() {  # name, train.py arguments
-    local name="$1"; shift
-    if [ -f "$ROOT/$name.tar.gz" ]; then
-        log "$name: finished before ($name.tar.gz is there), skipped"
-        return
-    fi
-    bash "$HERE/experiment.sh" "$name" "$@" "${ARGS[@]}"
-}
-
-dagger_round1() {
-    local tarf="$ROOT/dagger1.tar" waited=0 limit=$(( ${WAIT_HOURS:-12} * 3600 )) poll="${POLL:-300}" said=""
-    [ -f "$FEATURES/dagger1.done" ] && return
-    while :; do
-        if [ -f "$tarf" ] && [ -f "$tarf.sha256" ]; then
-            if (cd "$ROOT" && sha256sum -c --status dagger1.tar.sha256); then
-                break
-            fi
-            [ "$said" = mismatch ] || log "dagger1.tar does not match dagger1.tar.sha256 yet: still uploading, or a broken copy (upload it again)"
-            said=mismatch
-        else
-            [ "$said" = missing ] || log "L1 waits for dagger1.tar and dagger1.tar.sha256 in $ROOT (from the lab PC)"
-            said=missing
-        fi
-        if [ "$waited" -ge "$limit" ]; then
-            log "no complete dagger1.tar after ${WAIT_HOURS:-12} h: L1 not run. Upload it, then rerun this script."
-            exit 1
-        fi
-        sleep "$poll"
-        waited=$(( waited + poll ))
-    done
-    log "dagger1.tar checksum ok: extracting"
-    tar -xf "$tarf" -C "$ROOT"
-    local want have
-    want="$(grep -o '"episodes": *[0-9]*' "$ROOT/data/dagger/round1/summary.json" | grep -o '[0-9]*$')"
-    have="$(find "$FEATURES/dagger1" -maxdepth 1 -name '*.npy' 2>/dev/null | wc -l)"
-    if [ "$have" != "$want" ]; then
-        echo "dagger1: $have episode features in $FEATURES/dagger1, the round has $want (extracted under $ROOT/data)"
-        exit 1
-    fi
-    touch "$FEATURES/dagger1.done"
-    log "dagger1: $have episodes ready (dagger1.tar can be deleted)"
-}
 
 log "L runs: features, teacher labels, then L0_r2r, L2_teacher, L1_dagger1 (${STEPS:-3000} steps each)"
 if [ -f "$FEATURES/r2r.done" ]; then
