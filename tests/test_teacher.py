@@ -233,3 +233,68 @@ def test_extract_teacher_probs_end_to_end(tok, tmp_path, monkeypatch):
     script.run(script.parse_args())
     got = {k for p in out2.glob("shard_0/part_*.npz") for k in np.load(p)["keys"].tolist()}
     assert got == {"r2r:7-0", "r2r:7-1", "r2r:7-2", "r2r:8-0"}
+
+
+def _write_source(tmp_path, name, episodes):
+    """A NaVILA-format source: {episode: labels}, one frame folder per episode. Returns (annotations, frames)."""
+    frames, ann, rows = tmp_path / (name + "_frames"), tmp_path / (name + ".json"), []
+    for ep, labels in episodes.items():
+        n = 1
+        for step, label in enumerate(labels):
+            rows.append({"video_id": "%s-%d" % (ep, step), "q": "Go past the bed and stop.", "a": ANSWERS[label],
+                         "frames": ["%s/frame_%d.jpg" % (ep, i) for i in range(n)]})
+            n += 0 if label == 0 else (label - 1) % 3 + 1
+        (frames / ep).mkdir(parents=True)
+        for i in range(n):
+            Image.new("RGB", (8, 8), (i * 20, 90, 50)).save(frames / ep / ("frame_%d.jpg" % i))
+    ann.write_text(json.dumps(rows))
+    return ann, frames
+
+
+def test_teacher_labels_for_a_dagger_round_only(tok, tmp_path, monkeypatch):
+    """--sources none --extra dagger2 ...: NaVILA's labels on a DAgger round's states, in a folder of their own."""
+    fake_llava(monkeypatch, tok)
+    script = load_script()
+    ann, frames = _write_source(tmp_path, "dagger2", {"31": [6, 0], "32": [1, 3, 0]})
+    out = tmp_path / "teacher_dagger2"
+    src = ["--sources", "none", "--extra", "dagger2", str(ann), str(frames)]
+    monkeypatch.setattr(sys, "argv", ["x", "--ckpt", str(tmp_path / "ckpt"), "--out", str(out), "--chunk", "2"] + src)
+    script.run(script.parse_args())
+    monkeypatch.setattr(sys, "argv", ["x", "--out", str(out), "--merge"] + src)
+    script.merge(script.parse_args())
+    keys = (out / "keys.txt").read_text().split()
+    assert keys == ["dagger2:31-0", "dagger2:31-1", "dagger2:32-0", "dagger2:32-1", "dagger2:32-2"]
+    stats = json.loads((out / "stats.json").read_text())
+    assert stats["by_source"] == {"dagger2": 5} and stats["missing"] == 0
+    for bad in (["--sources", "dagger2"], ["--sources", "r2r", "--extra", "r2r", str(ann), str(frames)]):
+        monkeypatch.setattr(sys, "argv", ["x", "--out", str(out), "--merge"] + bad)
+        with pytest.raises(SystemExit):
+            script.load_samples(script.parse_args())
+
+
+def _store(path, keys, seed):
+    path.mkdir()
+    (path / "keys.txt").write_text("\n".join(keys) + "\n")
+    p = np.random.default_rng(seed).dirichlet(np.ones(10), size=len(keys)).astype(np.float32)
+    np.save(path / "teacher_probs.npy", p)
+    return p
+
+
+def test_teacher_store_reads_several_folders(tmp_path):
+    from lightnav.data import Row, TeacherStore, target_distribution
+
+    a = _store(tmp_path / "teacher", ["r2r:1-0", "r2r:1-1"], 0)
+    b = _store(tmp_path / "teacher_dagger2", ["dagger2:5-0", "dagger2:5-1", "dagger2:6-0"], 1)
+    store = TeacherStore([str(tmp_path / "teacher"), str(tmp_path / "teacher_dagger2")])
+    assert np.allclose(store.get("r2r:1-1"), a[1]) and np.allclose(store.get("dagger2:6-0"), b[2])
+    assert store.get("dagger2:9-0") is None
+    assert np.allclose(TeacherStore(str(tmp_path / "teacher")).get("r2r:1-0"), a[0])       # one folder, as before
+    rows = [Row(s, v, v.split("-")[0], 0, "go", 1, 1, v.split("-")[0] + "/")
+            for s, v in (("r2r", "1-0"), ("r2r", "2-0"), ("dagger2", "5-1"), ("dagger1", "7-0"))]
+    assert store.coverage(rows) == {"r2r": (1, 2), "dagger2": (1, 1), "dagger1": (0, 1)}
+    # a DAgger row: half the geometric expert's answer, half NaVILA's distribution
+    t = target_distribution(4, store.get("dagger2:5-1"), alpha=0.5)
+    assert np.isclose(t.sum(), 1) and np.isclose(t[4], 0.5 + 0.5 * b[1][4])
+    _store(tmp_path / "again", ["r2r:1-0"], 2)
+    with pytest.raises(ValueError, match="r2r:1-0"):
+        TeacherStore([str(tmp_path / "teacher"), str(tmp_path / "again")])

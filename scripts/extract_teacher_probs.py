@@ -13,6 +13,9 @@ lightnav.data.TeacherStore reads), teacher_logp.npy (raw log-likelihoods) and st
     # one of 4 processes sharing a GPU
     python scripts/extract_teacher_probs.py --ckpt <ckpt> --out runs/teacher --num_shards 4 --shard 0
     python scripts/extract_teacher_probs.py --out runs/teacher --merge
+    # a DAgger round with its frames kept (states the student visited), in a folder of its own
+    python scripts/extract_teacher_probs.py --ckpt <ckpt> --out runs/teacher_dagger2 --sources none \
+        --extra dagger2 data/dagger/round2/annotations.json data/dagger/round2/frames
 """
 import argparse
 import glob
@@ -41,7 +44,10 @@ def parse_args():
     data = os.path.join(ROOT, "data", "NaVILA-Dataset")
     p.add_argument("--ckpt", default=None, help="NaVILA checkpoint folder (a8cheng/navila-llama3-8b-8f)")
     p.add_argument("--out", required=True)
-    p.add_argument("--sources", default="r2r,rxr")
+    p.add_argument("--sources", default="r2r,rxr", help="of r2r and rxr; 'none' for --extra sources only")
+    p.add_argument("--extra", nargs=3, action="append", default=[], metavar=("NAME", "ANN", "FRAMES"),
+                   help="another source in NaVILA's format: a name (the key prefix, e.g. dagger2), its "
+                        "annotations.json and its frame folder. Repeatable")
     p.add_argument("--r2r_ann", default=os.path.join(data, "R2R", "annotations.json"))
     p.add_argument("--r2r_frames", default=os.path.join(data, "R2R", "train"))
     p.add_argument("--rxr_ann", default=os.path.join(data, "RxR", "annotations.json"))
@@ -58,12 +64,27 @@ def parse_args():
     return p.parse_args()
 
 
+def source_names(args):
+    """The sources of this run: those of --sources, then the --extra ones."""
+    names = [s for s in args.sources.split(",") if s and s != "none"]
+    for s in names:
+        if s not in ("r2r", "rxr"):
+            sys.exit("--sources takes r2r, rxr or none, not %r (other sources go in --extra)" % s)
+    extra = [e[0] for e in args.extra]
+    if len(set(names + extra)) != len(names) + len(extra):
+        sys.exit("a source is named twice: %s" % (names + extra))
+    return names + extra
+
+
 def load_samples(args):
     """Unique decision samples (one per video_id and source), English only as the student uses them, by key."""
+    source_names(args)                       # checks the names first
+    sources = [(s, getattr(args, s + "_ann"), getattr(args, s + "_frames"))
+               for s in args.sources.split(",") if s and s != "none"] + [tuple(e) for e in args.extra]
     rows, roots = [], {}
-    for name in args.sources.split(","):
-        rows += D.load_rows(getattr(args, name + "_ann"), name, english_only=True, dedupe=True)
-        roots[name] = getattr(args, name + "_frames")
+    for name, ann, frames in sources:
+        rows += D.load_rows(ann, name, english_only=True, dedupe=True)
+        roots[name] = frames
     return sorted(rows, key=lambda r: r.key), roots
 
 
@@ -189,7 +210,7 @@ def merge(args):
     checked = gen != NOT_CHECKED
     stats = {
         "n": int(len(keys)),
-        "by_source": {s: int(sum(k.startswith(s + ":") for k in keys.tolist())) for s in args.sources.split(",")},
+        "by_source": {s: int(sum(k.startswith(s + ":") for k in keys.tolist())) for s in source_names(args)},
         "top1_equals_label": float((top == labels).mean()),
         "mean_prob_of_label": float(probs[rows, labels].mean()),
         "mean_prob_off_label": float(1 - probs[rows, labels].mean()),

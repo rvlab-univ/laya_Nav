@@ -8,7 +8,7 @@ import json
 import os
 import random
 import re
-from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Set
+from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -244,21 +244,40 @@ def split_rows(rows: Sequence[Row], val: Dict[str, Set[str]]):
 # ------------------------------------------------------------------------------ teacher labels
 
 class TeacherStore:
-    """`keys.txt` + `teacher_probs.npy` ([N, 10] float), memory-mapped. Keys are `Row.key`."""
+    """`keys.txt` + `teacher_probs.npy` ([N, 10] float), memory-mapped. Keys are `Row.key`. `root` is one folder or
+    several read together (R2R / RxR labels and a DAgger round's, written by scripts/extract_teacher_probs.py into
+    folders of their own); a key may be in only one of them."""
 
-    def __init__(self, root: str):
-        with open(os.path.join(root, "keys.txt")) as f:
-            self.index = {k.rstrip("\n"): i for i, k in enumerate(f)}
-        self.root = root
-        self._arr = None
+    def __init__(self, root: Union[str, Sequence[str]]):
+        self.roots = [root] if isinstance(root, str) else list(root)
+        self.root = self.roots[0]
+        self.index: Dict[str, Tuple[int, int]] = {}
+        for j, r in enumerate(self.roots):
+            with open(os.path.join(r, "keys.txt")) as f:
+                for i, k in enumerate(f):
+                    k = k.rstrip("\n")
+                    if k in self.index:
+                        raise ValueError("teacher key %s is in both %s and %s" % (k, self.roots[self.index[k][0]], r))
+                    self.index[k] = (j, i)
+        self._arr: List[Optional[np.ndarray]] = [None] * len(self.roots)
 
     def get(self, key: str) -> Optional[np.ndarray]:
-        i = self.index.get(key)
-        if i is None:
+        hit = self.index.get(key)
+        if hit is None:
             return None
-        if self._arr is None:  # opened lazily so each dataloader worker gets its own mmap
-            self._arr = np.load(os.path.join(self.root, "teacher_probs.npy"), mmap_mode="r")
-        return np.asarray(self._arr[i], dtype=np.float32)
+        j, i = hit
+        if self._arr[j] is None:  # opened lazily so each dataloader worker gets its own mmap
+            self._arr[j] = np.load(os.path.join(self.roots[j], "teacher_probs.npy"), mmap_mode="r")
+        return np.asarray(self._arr[j][i], dtype=np.float32)
+
+    def coverage(self, rows: Sequence["Row"]) -> Dict[str, Tuple[int, int]]:
+        """Per source, (rows with a teacher distribution, rows)."""
+        out: Dict[str, List[int]] = {}
+        for r in rows:
+            c = out.setdefault(r.source, [0, 0])
+            c[0] += r.key in self.index
+            c[1] += 1
+        return {s: (a, b) for s, (a, b) in out.items()}
 
 
 # ------------------------------------------------------------------------------------ dataset

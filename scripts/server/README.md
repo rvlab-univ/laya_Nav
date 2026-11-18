@@ -250,6 +250,21 @@ nohup bash scripts/server/grid_runs.sh --teacher runs/teacher > logs/grid_runs.l
 - **L1(DAgger)이 이겼을 때:** DAgger 1회차는 프레임을 지웠으므로 PC에서 다시 주행해 새 인코더 특징을 만들어 올려야 한다. 그 전에 `--extra dagger1 ...`을 주면 스크립트가 바로 멈춘다.
 - 기존 224 px 특징(`siglip2_g2`)과 실험은 건드리지 않는다.
 
+### 6.6 DAgger 회차에 교사 라벨 붙이기 (2회차부터)
+
+학생이 간 상태에 NaVILA의 분포를 붙인다(`design_C_review.md` 5.7절). 프레임이 남은 회차만 된다. 1회차는 프레임을 지웠다.
+
+1. PC: `bash scripts/pack_dagger.sh 2` → `dagger2.tar`, `dagger2_frames.tar`(약 10 GB)와 각각의 `.sha256`.
+2. 넷 다 서버의 `~/light_nav`에 올린다. `dagger2.tar`는 `sha256sum -c dagger2.tar.sha256`이 `OK`인지 본 뒤 `tar -xf dagger2.tar`로 푼다.
+3. 서버:
+
+```bash
+nohup bash scripts/server/teacher_dagger.sh 2 > logs/teacher_dagger2.log 2>&1 &
+```
+
+- 프레임 묶음의 체크섬을 확인하고 풀고, NaVILA 샤드 2개(`SHARDS`)로 라벨을 만들어 `runs/teacher_dagger2`에 합친다. 약 11시간이다. 멈췄으면 같은 명령을 다시 실행한다.
+- 학습에는 `--teacher runs/teacher runs/teacher_dagger2 --extra dagger2 data/dagger/round2/annotations.json`을 준다.
+
 ## 진단
 
 학습된 모델이 지시문과 영상을 실제로 쓰는지 잰다(검증 5,000개, 모델마다 수십 분, GPU 약 4 GB).
