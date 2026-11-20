@@ -4,9 +4,14 @@
 #   bash scripts/local_drive.sh L0_r2r                  # runs/L0_r2r/last -> runs/eval/L0_r2r/
 # For a checkpoint trained on the server: tar -xzf <name>.tar.gz -C runs first.
 # Pick between experiments on val_seen; val_unseen is for the final comparison only.
+# SEEN=400 drives 400 val_seen episodes instead (runs/eval/<name>/r2r_valseen_400, a superset of the 100), the size
+# models are picked on from 2026-11-20 (design_C_review.md 5.9); BASE (default D) is the run compared against.
+#   SEEN=400 bash scripts/local_drive.sh L0_r2r && SEEN=400 BASE=L0_r2r bash scripts/local_drive.sh H1
 set -u
 NAME="${1:?run name (runs/<name>/last)}"
 PORT="${PORT:-8767}"
+SEEN="${SEEN:-100}"
+BASE="${BASE:-D}"
 cd "$(dirname "$0")/.."
 export HF_HOME="$PWD/assets/hf_cache" TOKENIZERS_PARALLELISM=false
 mkdir -p logs
@@ -21,11 +26,17 @@ for _ in $(seq 1 100); do
     sleep 3
 done
 for part in val_seen val_unseen; do
-    out="runs/eval/$NAME/r2r_100"; [ "$part" = val_seen ] && out="runs/eval/$NAME/r2r_valseen_100"
+    n=100 out="runs/eval/$NAME/r2r_100"
+    [ "$part" = val_seen ] && n="$SEEN" out="runs/eval/$NAME/r2r_valseen_$SEEN"
     env_vlnce/bin/python scripts/eval_vlnce.py --split r2r --agent http --url "http://127.0.0.1:$PORT" \
-        --part "$part" --episodes 100 --out "$out" 2>&1 | grep --line-buffered -E "episodes|Error|Traceback"
+        --part "$part" --episodes "$n" --out "$out" 2>&1 | grep --line-buffered -E "episodes|Error|Traceback"
 done
-echo "== val_seen 100 (D first)"
-env/bin/python scripts/eval_summary.py runs/eval/D/r2r_valseen_100 "runs/eval/$NAME/r2r_valseen_100" --pair
-echo "== val_unseen 100 (D first)"
-env/bin/python scripts/eval_summary.py runs/eval/D/r2r_100 "runs/eval/$NAME/r2r_100" --pair
+for sub in "r2r_valseen_$SEEN" r2r_100; do
+    echo "== $sub ($BASE first)"
+    if [ -f "runs/eval/$BASE/$sub/episodes.jsonl" ]; then
+        env/bin/python scripts/eval_summary.py "runs/eval/$BASE/$sub" "runs/eval/$NAME/$sub" --pair
+    else
+        echo "$BASE has not driven $sub: runs/eval/$NAME/$sub alone"
+        env/bin/python scripts/eval_summary.py "runs/eval/$NAME/$sub"
+    fi
+done

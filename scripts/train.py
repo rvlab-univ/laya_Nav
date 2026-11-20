@@ -69,6 +69,8 @@ def parse_args():
                    help="folder(s) with keys.txt and teacher_probs.npy (scripts/extract_teacher_probs.py), read "
                         "together: e.g. runs/teacher (R2R / RxR) and runs/teacher_dagger2 (a DAgger round's states)")
     p.add_argument("--alpha", type=float, default=0.5, help="weight of the teacher distribution in the target")
+    p.add_argument("--teacher_agree_only", action="store_true",
+                   help="mix the teacher in only where its first choice is the label (lightnav.data.TeacherStore)")
     p.add_argument("--match_frac", type=float, default=0.0,
                    help="share of instruction-route matching samples in training (design B 4.1 (A)); 0 = none")
     p.add_argument("--match_swap", type=float, default=0.6, help="share of landmark swaps among matching negatives")
@@ -315,9 +317,10 @@ def main():
         if model.tagging else ""), flush=True)
 
     train_rows, val_rows, roots = load_data(args)
-    teacher = D.TeacherStore(args.teacher) if args.teacher else None
+    teacher = D.TeacherStore(args.teacher, agree_only=args.teacher_agree_only) if args.teacher else None
     if teacher is not None:
-        print("teacher distributions (alpha %.2f): %s" % (args.alpha, ", ".join(
+        print("teacher distributions (alpha %.2f%s): %s" % (
+            args.alpha, ", only where its first choice is the label" if args.teacher_agree_only else "", ", ".join(
             "%s %d of %d rows" % (s, a, b) for s, (a, b) in teacher.coverage(train_rows).items())), flush=True)
     # --extra sources (DAgger rollouts) are other walks of R2R's episodes: no routes of their own for the matching
     # task, and the other instruction of the contrast loss comes from R2R's

@@ -385,6 +385,9 @@ def _resize_positions(pos: torch.Tensor, n: int) -> torch.Tensor:
     return x.reshape(-1, n).T.to(pos.dtype)
 
 
+GRID_POSITIONS = {"pos_cur": "current frame", "pos_hist": "past frames"}
+
+
 @torch.no_grad()
 def init_from(model: LayaNative, path: str) -> List[str]:
     """Load a checkpoint written by `save` into `model` as the start of a run (scripts/train.py --init). The two may
@@ -393,9 +396,10 @@ def init_from(model: LayaNative, path: str) -> List[str]:
     - the vision encoder (same feature size, e.g. SigLIP2 B/16 at 224 px -> 256 px): the vision tower and the tag
       table stay `model`'s (made by `build` from the new encoder), and the tag statistics must be set again from
       training frames, because the scores come from another encoder;
-    - the current frame's grid (e.g. 2 x 2 -> 4 x 4): its position embeddings are interpolated from the checkpoint's.
+    - the current frame's grid (e.g. 2 x 2 -> 4 x 4) or the past frames' (e.g. 1 x 1 -> 2 x 2, design_C_review.md
+      5.10): their position embeddings are interpolated from the checkpoint's.
 
-    Everything else (language encoder, head, scorer, projection, frame and past-frame embeddings, tag types) must
+    Everything else (language encoder, head, scorer, projection, frame embeddings, tag types) must
     have the same shape and is copied. Returns a note for each part not copied as it is (empty: a plain copy)."""
     from safetensors.torch import load_file
 
@@ -419,10 +423,10 @@ def init_from(model: LayaNative, path: str) -> List[str]:
         if k in skip:
             continue
         w = sd[k]
-        if k == "pos_cur" and w.shape != v.shape:
+        if k in GRID_POSITIONS and w.shape != v.shape:
             w = _resize_positions(w, v.shape[0])
-            notes.append("current frame %s -> %s tokens: position embeddings interpolated"
-                         % (_grid_name(sd[k].shape[0]), _grid_name(v.shape[0])))
+            notes.append("%s %s -> %s tokens: position embeddings interpolated"
+                         % (GRID_POSITIONS[k], _grid_name(sd[k].shape[0]), _grid_name(v.shape[0])))
         elif w.shape != v.shape:
             raise ValueError("%s: %s in %s, %s here" % (k, tuple(w.shape), path, tuple(v.shape)))
         new[k] = w

@@ -1,5 +1,6 @@
-# Sourced after common.sh by l_runs.sh, grid_runs.sh and all_runs.sh: one experiment that is skipped once finished,
-# DAgger round 1 from the lab PC, and waiting for a file. ARGS (the calling script's arguments) go to every run.
+# Sourced after common.sh by l_runs.sh, grid_runs.sh, all_runs.sh and h_runs.sh: one experiment that is skipped once
+# finished (alone, or logged to logs/<name>.log), DAgger round 1 from the lab PC, and waiting for a file.
+# ARGS (the calling script's arguments) go to every run.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 run() {  # name, train.py arguments
@@ -10,6 +11,23 @@ run() {  # name, train.py arguments
     fi
     bash "$HERE/experiment.sh" "$name" "$@" "${ARGS[@]}"
 }
+
+logged() {  # name, train.py arguments: the run, its output appended to logs/<name>.log
+    local name="$1"
+    if [ -f "$ROOT/$name.tar.gz" ]; then
+        log "$name: finished before ($name.tar.gz is there), skipped"
+        return
+    fi
+    log "$name: started (logs/$name.log)"
+    if run "$@" >> "$LOGS/$name.log" 2>&1; then
+        log "$name: finished, $name.tar.gz"
+    else
+        log "$name: stopped with an error, see the end of logs/$name.log"
+        return 1
+    fi
+}
+
+clamp() { local v="$1"; [ "$v" -lt "$2" ] && v="$2"; [ "$v" -gt "$3" ] && v="$3"; echo "$v"; }
 
 # Waits for dagger1.tar and dagger1.tar.sha256 in ~/light_nav (from the lab PC: scripts/pack_dagger.sh 1) until the
 # checksum matches (so the upload can go on meanwhile; at most WAIT_HOURS, default 12), then extracts the round into

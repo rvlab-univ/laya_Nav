@@ -265,6 +265,34 @@ nohup bash scripts/server/teacher_dagger.sh 2 > logs/teacher_dagger2.log 2>&1 &
 - 프레임 묶음의 체크섬을 확인하고 풀고, NaVILA 샤드 2개(`SHARDS`)로 라벨을 만들어 `runs/teacher_dagger2`에 합친다. 약 11시간이다. 멈췄으면 같은 명령을 다시 실행한다.
 - 학습에는 `--teacher runs/teacher runs/teacher_dagger2 --extra dagger2 data/dagger/round2/annotations.json`을 준다.
 
+### 6.7 H 실험: 과거 프레임 토큰 늘리기 (2026-11-20)
+
+과거 프레임 7장을 1토큰 대신 2×2 = 4토큰씩 보여 준다(`--grids 2 2`, 영상 토큰 11 → 32). 나머지는 D와 같다. 224 px 특징(`data/features/siglip2_g2`, 6.2절에서 만든 것)을 쓰고, R2R만 쓰고, `runs/D/last`에서 시작한다. 새로 만들 특징은 없다(`design_C_review.md` 5.10절).
+
+```bash
+cd ~/light_nav && git pull                 # 서버에서 다른 스크립트가 돌지 않을 때
+pgrep -u "$USER" -af extract_teacher_probs # 교사 라벨이 돌고 있으면 H1_kd는 시작하지 않는다
+nohup bash scripts/server/h_runs.sh > logs/h_runs.log 2>&1 &
+tail -n 20 logs/h_runs.log
+bash scripts/server/status.sh
+```
+
+| 실행 | 길이 | 바꾸는 것 | 비교 대상 |
+|---|---|---|---|
+| `H1` | 3,000 step | 과거 프레임 2×2 | `L0_r2r` |
+| `H1_kd` | 3,000 step | H1 + NaVILA의 1순위가 정답인 행에만 교사 분포(`--teacher runs/teacher --teacher_agree_only`) | `H1` |
+| `H1_long` | 9,000 step | H1을 더 길게(R2R 1.4 epoch) | `H1` |
+
+- 셋이 동시에 돈다. 3,000 step 실험은 1시간 남짓, `H1_long`은 3~4시간이다(셋이 함께 돌 때 1.35~1.55 s/step 기준).
+- `H1_kd`는 `runs/teacher`를 읽는다. RxR 교사 라벨(4절)의 합치기가 이 폴더를 다시 쓰므로, `extract_teacher_probs.py`가 돌고 있으면 시작하지 않고 로그에 그렇게 남긴다. 그때는 교사 라벨을 멈추거나(`pkill -u "$USER" -f extract_teacher_probs`, 나중에 같은 명령으로 이어진다) 끝나기를 기다린 뒤 같은 명령을 다시 실행한다.
+- 멈췄으면 같은 명령을 다시 실행한다. 끝난 실험(`<이름>.tar.gz`)은 건너뛰고, 멈춘 실험은 `runs/<이름>/last`에서 이어 간다.
+- 끝나면 `H1.tar.gz`, `H1_kd.tar.gz`, `H1_long.tar.gz`를 연구실 PC로 옮긴다. PC에서는 val_seen 400개로 고른다:
+
+```bash
+SEEN=400 bash scripts/local_drive.sh L0_r2r            # 기준을 400개로 (한 번만, 약 40분)
+tar -xzf H1.tar.gz -C runs && SEEN=400 BASE=L0_r2r bash scripts/local_drive.sh H1    # 모델당 약 50분
+```
+
 ## 진단
 
 학습된 모델이 지시문과 영상을 실제로 쓰는지 잰다(검증 5,000개, 모델마다 수십 분, GPU 약 4 GB).

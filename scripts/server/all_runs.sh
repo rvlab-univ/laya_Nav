@@ -25,26 +25,10 @@ V256=google/siglip2-base-patch16-256
 FAILED="$F256.failed"                 # lane 3 leaves this when its features fail, so lane 2 stops waiting
 rm -f "$FAILED"
 
-clamp() { local v="$1"; [ "$v" -lt "$2" ] && v="$2"; [ "$v" -gt "$3" ] && v="$3"; echo "$v"; }
 QUOTA="$(cpu_quota)"
 RUN_WORKERS="$(clamp $(( QUOTA / 6 )) 2 8)"      # data loader processes per training
 RUN_THREADS="$(clamp $(( QUOTA / 6 )) 2 4)"      # torch threads per training
 FEAT_WORKERS="$(clamp $(( QUOTA / 3 )) 2 16)"    # JPEG decoding beside two trainings
-
-logged() {  # name, train.py arguments: the run, its output appended to logs/<name>.log
-    local name="$1"
-    if [ -f "$ROOT/$name.tar.gz" ]; then
-        log "$name: finished before ($name.tar.gz is there), skipped"
-        return
-    fi
-    log "$name: started (logs/$name.log)"
-    if run "$@" >> "$LOGS/$name.log" 2>&1; then
-        log "$name: finished, $name.tar.gz"
-    else
-        log "$name: stopped with an error, see the end of logs/$name.log"
-        return 1
-    fi
-}
 
 features() {  # log name; VISION, GRID, FEATURES and WORKERS from the caller
     if [ -f "$FEATURES/r2r.done" ]; then

@@ -298,3 +298,25 @@ def test_teacher_store_reads_several_folders(tmp_path):
     _store(tmp_path / "again", ["r2r:1-0"], 2)
     with pytest.raises(ValueError, match="r2r:1-0"):
         TeacherStore([str(tmp_path / "teacher"), str(tmp_path / "again")])
+
+
+def test_teacher_only_where_its_first_choice_is_the_label(tmp_path):
+    """--teacher_agree_only: the other rows train on the label alone (design_C_review.md 5.10)."""
+    from lightnav.data import Row, TeacherStore, target_distribution
+
+    probs = np.full((3, 10), 0.02, dtype=np.float32)
+    probs[0, 0], probs[1, 3], probs[2, 0] = 0.82, 0.82, 0.82            # first choices: stop, forward 75, stop
+    root = tmp_path / "teacher"
+    root.mkdir()
+    (root / "keys.txt").write_text("r2r:1-0\nr2r:1-1\nr2r:1-2\n")
+    np.save(root / "teacher_probs.npy", probs)
+    rows = [Row("r2r", "1-%d" % i, "1", i, "go", label, 1, "1/") for i, label in enumerate((0, 0, 0))]
+    rows.append(Row("r2r", "2-0", "2", 0, "go", 0, 1, "2/"))
+    agree = TeacherStore(str(root), agree_only=True)
+    assert np.allclose(agree.for_row(rows[0]), probs[0]) and agree.for_row(rows[1]) is None
+    assert agree.for_row(rows[3]) is None                                # no teacher label at all
+    assert agree.coverage(rows) == {"r2r": (2, 4)}
+    assert TeacherStore(str(root)).coverage(rows) == {"r2r": (3, 4)}
+    assert np.isclose(target_distribution(0, agree.for_row(rows[0]))[0], 0.5 + 0.5 * 0.82)
+    assert target_distribution(0, agree.for_row(rows[1]))[0] == 1.0     # NaVILA said forward: the label alone
+

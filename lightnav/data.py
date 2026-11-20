@@ -246,10 +246,15 @@ def split_rows(rows: Sequence[Row], val: Dict[str, Set[str]]):
 class TeacherStore:
     """`keys.txt` + `teacher_probs.npy` ([N, 10] float), memory-mapped. Keys are `Row.key`. `root` is one folder or
     several read together (R2R / RxR labels and a DAgger round's, written by scripts/extract_teacher_probs.py into
-    folders of their own); a key may be in only one of them."""
+    folders of their own); a key may be in only one of them.
 
-    def __init__(self, root: Union[str, Sequence[str]]):
+    `agree_only`: a row's target mixes in the teacher only where the teacher's first choice is the row's label, as
+    CLASH distils only its large model's right answers (design_C_review.md 5.10). On R2R that keeps 58% of the rows,
+    and the stop target averages 0.95 instead of 0.63 (NaVILA's P(stop) on the stop rows is low)."""
+
+    def __init__(self, root: Union[str, Sequence[str]], agree_only: bool = False):
         self.roots = [root] if isinstance(root, str) else list(root)
+        self.agree_only = agree_only
         self.root = self.roots[0]
         self.index: Dict[str, Tuple[int, int]] = {}
         for j, r in enumerate(self.roots):
@@ -270,13 +275,21 @@ class TeacherStore:
             self._arr[j] = np.load(os.path.join(self.roots[j], "teacher_probs.npy"), mmap_mode="r")
         return np.asarray(self._arr[j][i], dtype=np.float32)
 
+    def for_row(self, row: "Row") -> Optional[np.ndarray]:
+        """The distribution `row`'s target mixes in, or None."""
+        t = self.get(row.key)
+        if t is not None and self.agree_only and int(np.argmax(t)) != row.label:
+            return None
+        return t
+
     def coverage(self, rows: Sequence["Row"]) -> Dict[str, Tuple[int, int]]:
-        """Per source, (rows with a teacher distribution, rows)."""
+        """Per source, (rows whose target mixes in a teacher distribution, rows)."""
         out: Dict[str, List[int]] = {}
         for r in rows:
             c = out.setdefault(r.source, [0, 0])
-            c[0] += r.key in self.index
+            c[0] += self.for_row(r) is not None if self.agree_only else r.key in self.index
             c[1] += 1
+        self._arr = [None] * len(self.roots)    # unopened again: dataloader workers open their own
         return {s: (a, b) for s, (a, b) in out.items()}
 
 
@@ -352,7 +365,7 @@ class NavDataset(Dataset):
     def __getitem__(self, i):
         r = self.rows[i]
         instruction, label, flip = r.instruction, r.label, False
-        teacher = self.teacher.get(r.key) if self.teacher is not None else None
+        teacher = self.teacher.for_row(r) if self.teacher is not None else None
         if self.mirror_prob > 0 and random.random() < self.mirror_prob:
             mirrored = mirror_instruction(instruction)
             if mirrored is not None:

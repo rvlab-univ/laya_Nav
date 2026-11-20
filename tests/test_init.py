@@ -1,5 +1,6 @@
 """Starting a run from another checkpoint (lightnav.model.init_from, design_C_review.md 5.5): the vision encoder may
-change (224 -> 256 px) and the current frame's grid may grow (2 x 2 -> 4 x 4); everything else is copied."""
+change (224 -> 256 px) and the current or past frames' grid may grow (2 x 2 -> 4 x 4, 1 x 1 -> 2 x 2); everything else
+is copied."""
 import pytest
 import torch
 import torch.nn.functional as F
@@ -83,6 +84,32 @@ def test_new_encoder_and_grid(tok, tmp_path):
     assert logits.shape == (2, 10) and torch.isfinite(logits).all()
 
 
+def test_past_frames_grow_to_2x2(tok, tmp_path):
+    """Run H1 (design_C_review.md 5.10): D's encoder and current frame, each past frame as 2 x 2 tokens."""
+    old, path = old_student(tok, tmp_path)
+    new = student(tok, 32, 2, "tiny-224", hist_grid=2, seed=3)
+    notes = init_from(new, path)
+    assert notes == ["past frames 1 x 1 -> 2 x 2 tokens: position embeddings interpolated"]
+    sd, before = new.state_dict(), old.state_dict()
+    for k, v in sd.items():
+        if k == "pos_hist":
+            assert v.shape == (4, before[k].shape[1]) and torch.allclose(v, before[k].expand(4, -1))
+        else:
+            assert torch.equal(v, before[k]), k
+    batch = fake_batch(tok, new, INSTRUCTIONS, n_frames=[3, 40])
+    with torch.no_grad():
+        tokens = new.frame_tokens(new.encode_frames(batch["pixels"]), batch["frame_slot"])
+        logits = new(batch)
+    sizes = [t.shape[0] for t in tokens]
+    assert sizes == [4] * len(sizes) and len(sizes) == 3 + 8    # 3 frames, then 8: 4 tokens each
+    assert logits.shape == (2, 10) and torch.isfinite(logits).all()
+    save(new, tok, str(tmp_path / "h1"))
+    again, _ = load(str(tmp_path / "h1"))
+    assert again.cfg.hist_grid == 2
+    with torch.no_grad():
+        assert torch.allclose(again.eval()(batch), logits, atol=1e-5)
+
+
 def test_the_new_student_saves_and_loads_at_its_own_size(tok, tmp_path):
     """What scripts/local_drive.sh relies on: the agent reads the image size and encoder from the checkpoint."""
     _, path = old_student(tok, tmp_path)
@@ -100,7 +127,5 @@ def test_the_new_student_saves_and_loads_at_its_own_size(tok, tmp_path):
 
 def test_what_cannot_be_carried_over(tok, tmp_path):
     _, path = old_student(tok, tmp_path)
-    with pytest.raises(ValueError, match="pos_hist"):          # past frames: 1 token in the checkpoint, 4 here
-        init_from(student(tok, 32, 2, "tiny-224", hist_grid=2), path)
     with pytest.raises(ValueError, match="tag phrases"):
         init_from(student(tok, 32, 2, "tiny-224", vocab=VOCAB[:5]), path)
