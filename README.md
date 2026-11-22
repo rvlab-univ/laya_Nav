@@ -1,5 +1,9 @@
 # lightnav: 경량 NaVILA
 
+<p align="center"><img src="docs/figures/fig_arch_base.png" width="620" alt="제안 모델 구조"></p>
+
+> 지시문, 랜드마크 태그(`seen: …`), 고정 SigLIP2-B/16의 영상 토큰 11개(현재 프레임 2×2 + 과거 7장 1개씩)를 ModernBERT-large(Laya)가 한 번에 읽는다. 선택지마다 둔 `[MASK]` 10개 위치의 출력이 NaVILA의 10개 명령(정지, 전진 25/50/75 cm, 좌·우 15/30/45°)의 확률이다. 파라미터 516.0M, RTX 5060 Ti에서 판단 1회 47.4 ms(NaVILA 8B는 RTX 4090에서 594.6 ms). F_full 후보(과거 프레임 2×2 + 위치 임베딩)는 [fig_arch_full.png](docs/figures/fig_arch_full.png). 그림은 `python3 docs/figures/make_arch_figure.py --variant base|full`로 다시 만든다.
+
 NaVILA(8B VLA)의 판단 부분을 BERT 계열 비자기회귀 판단 모델(Laya)로 바꾸는 연구 코드다.
 - 위치: `rvlab-univ/laya_Nav` 저장소의 `main` 브랜치 (2026-11-12부터)
 - 이전 LayaNav(InternNav / DualVLN 기반)는 `layanav` 브랜치에 그대로 있다. 두 브랜치는 기록을 공유하지 않는다.
