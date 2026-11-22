@@ -47,7 +47,7 @@ features() {  # log name; VISION, GRID, FEATURES and WORKERS from the caller
 lane1() {
     export FEATURES="$F224" WORKERS="$RUN_WORKERS" THREADS="$RUN_THREADS"
     logged L0_r2r
-    dagger_round1
+    dagger_round 1
     logged L1_dagger1 --extra dagger1 "$ROOT/data/dagger/round1/annotations.json"
 }
 

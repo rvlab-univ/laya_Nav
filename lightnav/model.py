@@ -47,6 +47,7 @@ class LayaNativeConfig:
     tags_current: int = 0               # landmark words named for the current frame; 0 and 0 = no tags
     tags_history: int = 0               # landmark words named for each past frame
     tag_vocab: List[str] = field(default_factory=list)   # the phrases; filled by `build` from lightnav.tasks
+    pose: bool = False                  # each frame's pose relative to the current one, added to its tokens
 
 
 def tag_vocabulary() -> List[str]:
@@ -120,6 +121,13 @@ class LayaNative(nn.Module):
         self.pos_hist = nn.Parameter(torch.zeros(cfg.hist_grid * cfg.hist_grid, d))
         for p in (self.frame_emb.weight, self.pos_cur, self.pos_hist):
             nn.init.normal_(p, std=0.02)
+        if cfg.pose:
+            from .pose import FEATURES
+
+            self.pose_emb = nn.Sequential(nn.Linear(FEATURES, d), nn.GELU(), nn.Linear(d, d))
+            # zero output at first: a run started from a model without poses begins where that model was
+            nn.init.zeros_(self.pose_emb[2].weight)
+            nn.init.zeros_(self.pose_emb[2].bias)
         self.tagging = bool(cfg.tags_current or cfg.tags_history)
         if self.tagging:
             if not cfg.tag_vocab:
@@ -240,18 +248,26 @@ class LayaNative(nn.Module):
         emb = self.dm.encoder.get_input_embeddings()(ids)
         return emb + self.tag_type[types.clamp(min=0)] * (types >= 0)[:, None]
 
-    def frame_tokens(self, feats: torch.Tensor, slots: torch.Tensor) -> List[torch.Tensor]:
+    def frame_tokens(self, feats: torch.Tensor, slots: torch.Tensor,
+                     poses: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
         """Image tokens of each frame: the current frame keeps every patch, past frames are pooled.
 
         `feats` is [N, grid * grid, dv] for every frame, or a list holding, per frame, either that or an
         already pooled [hist_grid * hist_grid, dv] (what the agent caches for past frames), or stored features
         ({"grid": [N, g * g, dv], ...} with g a multiple of both cur_grid and hist_grid).
+        `poses` [N, lightnav.pose.FEATURES] (with `cfg.pose`): each frame's pose relative to the current one; None
+        means unknown for every frame.
         """
         cur = self.cfg.num_frames - 1
         out = []
         if isinstance(feats, dict):
             feats = feats["grid"].to(self.vis_proj[0].weight.dtype)
-        for f, s in zip(feats, slots.tolist()):
+        pose = None
+        if self.cfg.pose:
+            w = self.pose_emb[0].weight
+            pose = self.pose_emb(torch.zeros(len(slots), w.shape[1], device=w.device, dtype=w.dtype)
+                                 if poses is None else poses.to(w.device, w.dtype))
+        for i, (f, s) in enumerate(zip(feats, slots.tolist())):
             if s == cur:
                 if self.cfg.cur_grid and f.shape[0] != self.pos_cur.shape[0]:
                     f = self.pool_history(f[None], self.cfg.cur_grid)[0]
@@ -260,7 +276,8 @@ class LayaNative(nn.Module):
                 if f.shape[0] != self.pos_hist.shape[0]:
                     f = self.pool_history(f[None])[0]
                 tok = self.vis_proj(f) + self.pos_hist
-            out.append(tok + self.frame_emb.weight[s])
+            tok = tok + self.frame_emb.weight[s]
+            out.append(tok if pose is None else tok + pose[i])
         return out
 
     # ----------------------------------------------------------------------------- sequence
@@ -289,7 +306,7 @@ class LayaNative(nn.Module):
         markers, `marker_mask` False) gets -1e4 in the unused columns. `feats` skips the vision encoder."""
         if feats is None:
             feats = batch["feats"] if "feats" in batch else self.encode_frames(batch["pixels"])
-        tokens = self.frame_tokens(feats, batch["frame_slot"])
+        tokens = self.frame_tokens(feats, batch["frame_slot"], batch.get("frame_pose"))
         tags = None
         if self.tagging:
             words = self.row_tags(feats, batch["frame_slot"], batch["frame_owner"], batch["input_ids"].size(0),
@@ -391,13 +408,15 @@ GRID_POSITIONS = {"pos_cur": "current frame", "pos_hist": "past frames"}
 @torch.no_grad()
 def init_from(model: LayaNative, path: str) -> List[str]:
     """Load a checkpoint written by `save` into `model` as the start of a run (scripts/train.py --init). The two may
-    differ in two ways (design_C_review.md 5.5):
+    differ in three ways (design_C_review.md 5.5):
 
     - the vision encoder (same feature size, e.g. SigLIP2 B/16 at 224 px -> 256 px): the vision tower and the tag
       table stay `model`'s (made by `build` from the new encoder), and the tag statistics must be set again from
       training frames, because the scores come from another encoder;
     - the current frame's grid (e.g. 2 x 2 -> 4 x 4) or the past frames' (e.g. 1 x 1 -> 2 x 2, design_C_review.md
-      5.10): their position embeddings are interpolated from the checkpoint's.
+      5.10): their position embeddings are interpolated from the checkpoint's;
+    - `model` reads poses and the checkpoint did not (5.11): the pose embedding stays `model`'s, which adds nothing
+      until it is trained.
 
     Everything else (language encoder, head, scorer, projection, frame embeddings, tag types) must
     have the same shape and is copied. Returns a note for each part not copied as it is (empty: a plain copy)."""
@@ -409,8 +428,11 @@ def init_from(model: LayaNative, path: str) -> List[str]:
     if model.tagging and old.get("tag_vocab") != model.cfg.tag_vocab:
         raise ValueError("%s has other tag phrases than this model" % path)
     skip, notes = set(), []
+    if model.cfg.pose and not old.get("pose"):
+        skip = {k for k in own if k.startswith("pose_emb.")}
+        notes.append("pose embedding: new, adds nothing at the start")
     if old["vision_encoder"] != model.cfg.vision_encoder:
-        skip = {k for k in (*own, *sd) if k.startswith("vision.")} | {"tag_text", "tag_mu", "tag_sd"}
+        skip |= {k for k in (*own, *sd) if k.startswith("vision.")} | {"tag_text", "tag_mu", "tag_sd"}
         notes.append("vision encoder %s -> %s: the vision tower and tag table are the new encoder's, the tag "
                      "statistics are to be set again" % (old["vision_encoder"], model.cfg.vision_encoder))
     extra = sorted(set(sd) - set(own) - skip)

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The H runs of design_C_review.md 5.10 from one command, three trainings side by side:
+# The H runs of design_C_review.md 5.10 and P1 of 5.11 from one command, three trainings side by side:
 #   cd ~/light_nav && git pull
 #   nohup bash scripts/server/h_runs.sh > logs/h_runs.log 2>&1 &
 # H shows each of the 7 past frames as 2 x 2 tokens instead of 1 (--grids 2 2: 32 image tokens instead of 11). The
 # rest is D's: the 224 px features already on the server (data/features/siglip2_g2), R2R only, from runs/D/last.
 #   lane 1: H1       3,000 steps                                                compare with L0_r2r
+#           then P1  3,000 steps, H1 + each frame's pose by dead reckoning (--pose, 5.11)   compare with H1
 #   lane 2: H1_kd    3,000 steps, NaVILA's distribution only where its first choice is the label   compare with H1
 #   lane 3: H1_long  9,000 steps (R2R 1.4 epochs; L0 saw 0.46)                  compare with H1
 # H1_kd reads runs/teacher, so it does not start while NaVILA labels are being made (extract_teacher_probs.py):
@@ -22,7 +23,7 @@ H=(--grids 2 2)
 
 [ -f "$FEATURES/r2r.done" ] || { echo "no complete R2R features in $FEATURES: scripts/server/features.sh"; exit 1; }
 
-lane1() { export STEPS=3000; logged H1 "${H[@]}"; }
+lane1() { export STEPS=3000; logged H1 "${H[@]}" && logged P1 "${H[@]}" --pose; }
 
 lane2() {
     if [ ! -f "$ROOT/H1_kd.tar.gz" ]; then
@@ -42,7 +43,7 @@ lane2() {
 
 lane3() { export STEPS=9000; logged H1_long "${H[@]}"; }
 
-log "H runs: H1 and H1_kd (3,000 steps), H1_long (9,000 steps), three at a time, from ${INIT:-runs/D/last}"
+log "H runs: H1 then P1, H1_kd (3,000 steps each), H1_long (9,000 steps), three at a time, from ${INIT:-runs/D/last}"
 log "CPU quota $QUOTA: $WORKERS loader processes and $THREADS threads per training"
 gpu_report
 free="$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | head -1)"
@@ -54,11 +55,11 @@ lane1 & p1=$!
 lane2 & p2=$!
 lane3 & p3=$!
 bad=""
-wait "$p1" || bad="$bad H1"
+wait "$p1" || bad="$bad H1/P1"
 wait "$p2" || bad="$bad H1_kd"
 wait "$p3" || bad="$bad H1_long"
 done_runs=""
-for n in H1 H1_kd H1_long; do
+for n in H1 P1 H1_kd H1_long; do
     if [ -f "$ROOT/$n.tar.gz" ]; then done_runs="$done_runs $n.tar.gz"; fi
 done
 if [ -n "$bad" ]; then

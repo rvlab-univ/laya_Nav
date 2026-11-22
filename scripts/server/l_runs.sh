@@ -28,7 +28,7 @@ else
 fi
 run L0_r2r
 run L2_teacher --teacher "$RUNS/teacher"
-dagger_round1
+dagger_round 1
 run L1_dagger1 --extra dagger1 "$ROOT/data/dagger/round1/annotations.json"
 log "L runs done: $(cd "$ROOT" && ls -1 L0_r2r.tar.gz L2_teacher.tar.gz L1_dagger1.tar.gz | tr '\n' ' ')"
 log "next, on the lab PC for each: tar -xzf <name>.tar.gz -C runs && bash scripts/local_drive.sh <name>"

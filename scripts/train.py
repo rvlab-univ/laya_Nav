@@ -63,6 +63,9 @@ def parse_args():
     p.add_argument("--grids", type=int, nargs=2, default=(0, 7), metavar=("CURRENT", "PAST"),
                    help="image tokens per frame as a grid side: current frame (0 = all 14 x 14 patches) and each "
                         "past frame. Few tokens let the encoder learn to read the text (design B 7.2.3)")
+    p.add_argument("--pose", action="store_true",
+                   help="each frame's pose relative to the current one, by dead reckoning of the actions "
+                        "(lightnav.pose, design_C_review.md 5.11); a DAgger round (--extra) needs its episodes.jsonl")
     p.add_argument("--freeze_vision", action="store_true",
                    help="keep the vision encoder as SigLIP2 made it (tags stay aligned with its text table)")
     p.add_argument("--teacher", nargs="+", default=None,
@@ -102,6 +105,8 @@ def parse_args():
     p.add_argument("--val_max", type=int, default=5000, help="validation samples per evaluation")
     p.add_argument("--eval_every", type=int, default=2000)
     p.add_argument("--save_every", type=int, default=1000)
+    p.add_argument("--keep_every", type=int, default=0,
+                   help="also keep the model every this many steps in <out>/step_<n> (0: only <out>/last)")
     p.add_argument("--log_every", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
     return p.parse_args()
@@ -218,6 +223,8 @@ def contrast_loss(model, batch, feats, logits, margin):
     neg = {"input_ids": batch["neg_input_ids"], "text_len": batch["neg_text_len"],
            "marker_pos": batch["neg_marker_pos"], "marker_mask": batch["neg_marker_pos"] >= 0,
            "frame_owner": remap[owner[keep]], "frame_slot": batch["frame_slot"][keep]}
+    if "frame_pose" in batch:
+        neg["frame_pose"] = batch["frame_pose"][keep]
     neg_logits = model(neg, feats={k: v[keep] for k, v in feats.items()} if isinstance(feats, dict) else feats[keep])
     target = batch["target"][rows]
     lp_own = (target * torch.log_softmax(logits[rows], -1)).sum(-1)
@@ -286,7 +293,7 @@ def main():
                    or (args.init and checkpoint_config(args.init)["vision_encoder"]) or LayaNativeConfig.vision_encoder)
     cfg = LayaNativeConfig(laya=None if args.laya == "none" else args.laya, encoder=args.encoder,
                            vision_encoder=vision_name, tags_current=args.tags[0], tags_history=args.tags[1],
-                           cur_grid=args.grids[0], hist_grid=args.grids[1])
+                           cur_grid=args.grids[0], hist_grid=args.grids[1], pose=args.pose)
     model, tok = build(cfg)
     print("vision encoder %s (%d px)" % (cfg.vision_encoder, cfg.image_size), flush=True)
     new_vision = False
@@ -328,8 +335,24 @@ def main():
     base_rows = [r for r in train_rows if r.source not in extra]
     negative = (T.OtherInstruction(T.routes_from_rows(base_rows), alias={n: "r2r" for n in extra})
                 if args.contrast > 0 else None)
+    poses = None
+    if cfg.pose:
+        # a DAgger round's answers are the expert's, not the actions that ran: its poses come from its rollouts
+        poses = D.episode_poses([r for r in train_rows + val_rows if r.source not in extra])
+        for name, ann, *_ in args.extra:
+            rollouts = os.path.join(os.path.dirname(ann), "episodes.jsonl")
+            if not os.path.exists(rollouts):
+                raise SystemExit("--pose with --extra %s needs %s (scripts/collect_dagger.py's rollouts, in "
+                                 "dagger<n>.tar from round 2 on)" % (name, rollouts))
+            poses.update(D.rollout_poses(rollouts, name))
+        short = [r.key for r in train_rows + val_rows
+                 if len(poses.get("%s:%s" % (r.source, r.episode), ())) < r.n_frames]
+        if short:
+            raise SystemExit("no pose for every frame of %d rows, e.g. %s" % (len(short), short[:3]))
+        print("poses by dead reckoning for %d episodes" % len(poses), flush=True)
     train_set = D.NavDataset(train_rows, roots, tok, cfg, augment=True, mirror_prob=args.mirror,
-                             teacher=teacher, alpha=args.alpha, negative=negative, negative_prob=args.contrast_prob)
+                             teacher=teacher, alpha=args.alpha, negative=negative, negative_prob=args.contrast_prob,
+                             poses=poses)
     match_val = None
     if args.match_frac > 0:
         train_routes, val_routes = T.routes_from_rows(base_rows), T.routes_from_rows(val_rows)
@@ -360,8 +383,8 @@ def main():
         raise SystemExit("--warm_steps and --match_synth need --tags")
     train_loader = DataLoader(train_set, batch_size=args.batch, shuffle=True, drop_last=True, collate_fn=collate,
                               num_workers=args.workers, pin_memory=True, persistent_workers=args.workers > 0)
-    val_sets = {"nav": D.NavDataset(val_rows, roots, tok, cfg),
-                "nav_shuffled_text": D.NavDataset(shuffled_text(val_rows), roots, tok, cfg)}
+    val_sets = {"nav": D.NavDataset(val_rows, roots, tok, cfg, poses=poses),
+                "nav_shuffled_text": D.NavDataset(shuffled_text(val_rows), roots, tok, cfg, poses=poses)}
     if match_val is not None:
         val_sets["match"] = match_val
     val_loaders = {k: DataLoader(v, batch_size=args.batch * 2, shuffle=False, collate_fn=collate,
@@ -455,6 +478,8 @@ def main():
                 started = time.time()
             if step % args.save_every == 0 or step == total:
                 save_state(args, model, tok, opt, step)
+            if args.keep_every and step % args.keep_every == 0 and step < total:
+                save(model, tok, os.path.join(args.out, "step_%d" % step))
             if step >= total:
                 break
     print("done at step %d" % step, flush=True)

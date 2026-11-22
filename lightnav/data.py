@@ -143,6 +143,38 @@ def low_level_actions(rows: Sequence[Row]) -> Dict[str, List[int]]:
     return out
 
 
+def episode_poses(rows: Sequence[Row]) -> Dict[str, np.ndarray]:
+    """Per episode ("<source>:<episode>"), every frame's pose [n_frames, 3] by dead reckoning of the actions its
+    answers stand for (lightnav.pose). Only for sources whose answers are the actions taken (NaVILA's annotations,
+    not a DAgger round, where the student's answer often ran instead)."""
+    from .pose import dead_reckoning
+
+    return {ep: dead_reckoning(a) for ep, a in low_level_actions(rows).items()}
+
+
+def rollout_poses(episodes_jsonl: str, source: str) -> Dict[str, np.ndarray]:
+    """Per DAgger rollout ("<source>:<episode>"), every frame's pose by dead reckoning of the actions that ran, which
+    are the student's or the expert's ("run" of each decision in scripts/collect_dagger.py's episodes.jsonl; the
+    frames between two decisions are the run answer's low-level steps)."""
+    from .pose import dead_reckoning
+    from .questions import low_level
+
+    out = {}
+    with open(episodes_jsonl) as f:
+        for line in f:
+            e = json.loads(line)
+            rows, actions = e["rows"], []
+            for a, b in zip(rows, rows[1:]):
+                action, repeat = low_level(a["run"])
+                if b["frames"] - a["frames"] != repeat:
+                    raise ValueError("%s %s step %d: %d frames to the next decision, %r runs %d steps"
+                                     % (episodes_jsonl, e["episode_id"], a["step"], b["frames"] - a["frames"],
+                                        a["run"], repeat))
+                actions += [action] * repeat
+            out["%s:%s" % (source, e["episode_id"])] = dead_reckoning(actions)
+    return out
+
+
 # ---------------------------------------------------------------------------- validation split
 
 def episode_scenes(path: str) -> Dict[str, str]:
@@ -344,14 +376,16 @@ class NavDataset(Dataset):
     def __init__(self, rows: Sequence[Row], image_roots: Dict[str, str], tok, cfg, augment: bool = False,
                  mirror_prob: float = 0.0, teacher: Optional[TeacherStore] = None, alpha: float = 0.5,
                  negative: Optional[Callable[[Row, random.Random], Optional[str]]] = None,
-                 negative_prob: float = 0.0):
+                 negative_prob: float = 0.0, poses: Optional[Dict[str, np.ndarray]] = None):
         """`negative(row, rng)`, when given, returns another path's instruction; with probability `negative_prob`
-        a sample also carries it ("neg_ids", "neg_markers") for the instruction contrast loss of scripts/train.py."""
+        a sample also carries it ("neg_ids", "neg_markers") for the instruction contrast loss of scripts/train.py.
+        `poses` (`episode_poses`), when given, makes each sample carry its frames' poses relative to the current
+        one ("poses" [k, lightnav.pose.FEATURES])."""
         from laya.train import to_internal
 
         self.rows, self.image_roots, self.tok, self.cfg = list(rows), image_roots, tok, cfg
         self.mirror_prob, self.teacher, self.alpha = mirror_prob, teacher, alpha
-        self.negative, self.negative_prob = negative, negative_prob
+        self.negative, self.negative_prob, self.poses = negative, negative_prob, poses
         self.transform = make_image_transform(cfg.image_size, cfg.image_mean, cfg.image_std, augment)
         self.question = to_internal("action", QUESTION)
 
@@ -378,6 +412,14 @@ class NavDataset(Dataset):
         out = {"ids": ids, "markers": markers, frames_key(pixels): pixels, "slots": slots,
                "target": target_distribution(label, teacher, self.alpha), "label": label, "key": r.key,
                "mirrored": flip}
+        if self.poses is not None:
+            from .pose import mirrored, relative
+
+            walk = self.poses["%s:%s" % (r.source, r.episode)]
+            p = walk[[f for f in frame_slots(r.n_frames, self.cfg.num_frames) if f >= 0]]
+            if flip:
+                p = mirrored(p)
+            out["poses"] = relative(p, p[-1])
         if self.negative is not None and self.negative_prob > 0 and random.random() < self.negative_prob:
             rng = random.Random(random.getrandbits(64))
             neg = self.negative(r, rng)
@@ -428,6 +470,11 @@ def collate(batch: Sequence[Dict], pad_id: int) -> Dict:
         "frame_owner": torch.tensor([i for i, b in enumerate(batch) for _ in b["slots"]], dtype=torch.long),
         "frame_slot": torch.tensor([s for b in batch for s in b["slots"]], dtype=torch.long),
     }
+    if any("poses" in b for b in batch):
+        from .pose import unknown
+
+        out["frame_pose"] = torch.from_numpy(np.concatenate([b["poses"] if "poses" in b else unknown(len(b["slots"]))
+                                                             for b in batch]))
     if "feats" in batch[0]:
         out["feats"] = {k: torch.cat([b["feats"][k] for b in batch]) for k in batch[0]["feats"]}
     else:

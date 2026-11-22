@@ -66,20 +66,24 @@ def gt_answers(actions: Sequence[int]) -> List[str]:
 
 # ------------------------------------------------------------------------------------------- request format
 # A request is an uncompressed npz: frames uint8 [k, H, W, 3] (the real frames among NaVILA's 8, black padding left
-# out), slots int64 [k] (their position among the 8, the current frame is 7), and the instruction and episode id as
-# strings. The response is JSON: {"answer": str, "probs": [10 floats], "ms": float}.
+# out), slots int64 [k] (their position among the 8, the current frame is 7), the instruction and episode id as
+# strings, and optionally poses float64 [k, 3] (lightnav.pose.dead_reckoning). The response is JSON:
+# {"answer": str, "probs": [10 floats], "ms": float}.
 
-def encode_request(instruction: str, frames: Sequence[np.ndarray], slots: Sequence[int], episode_id: str = "") -> bytes:
+def encode_request(instruction: str, frames: Sequence[np.ndarray], slots: Sequence[int], episode_id: str = "",
+                   poses: Optional[np.ndarray] = None) -> bytes:
     buf = io.BytesIO()
+    extra = {} if poses is None else {"poses": np.asarray(poses, dtype=np.float64)}
     np.savez(buf, frames=np.stack([np.asarray(f, dtype=np.uint8)[..., :3] for f in frames]),
-             slots=np.asarray(slots, dtype=np.int64), instruction=np.array(instruction), episode=np.array(episode_id))
+             slots=np.asarray(slots, dtype=np.int64), instruction=np.array(instruction), episode=np.array(episode_id),
+             **extra)
     return buf.getvalue()
 
 
 def decode_request(data: bytes) -> Dict:
     with np.load(io.BytesIO(data), allow_pickle=False) as z:
         return {"frames": list(z["frames"]), "slots": z["slots"].tolist(), "instruction": str(z["instruction"]),
-                "episode": str(z["episode"])}
+                "episode": str(z["episode"]), "poses": z["poses"] if "poses" in z.files else None}
 
 
 def encode_response(answer: str, probs: Sequence[float], ms: float) -> bytes:

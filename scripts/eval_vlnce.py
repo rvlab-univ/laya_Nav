@@ -31,6 +31,7 @@ NAVILA_EVAL = os.path.join(ROOT, "NaVILA", "evaluation")
 sys.path.insert(0, ROOT)
 
 from lightnav.data import frame_slots                                         # noqa: E402
+from lightnav.pose import TURN_DEG, dead_reckoning                            # noqa: E402
 from lightnav.questions import ANSWERS, KEYS                                 # noqa: E402
 from lightnav.vlnce import (STOP_ACTION, decode_response, encode_request, gt_answers,  # noqa: E402
                             navila_actions)
@@ -59,6 +60,9 @@ def parse_args():
     p.add_argument("--gpu", type=int, default=0, help="GPU that renders the scenes")
     p.add_argument("--turn_angle", type=int, default=None,
                    help="override the turn angle (diagnosis only: NaVILA evaluates with 15 degrees)")
+    p.add_argument("--no_pose", action="store_true",
+                   help="send no poses: a student that reads them then drives with every frame's pose unknown "
+                        "(the check of how much it relies on them, design_C_review.md 5.11)")
     return p.parse_args()
 
 
@@ -114,7 +118,7 @@ class GtAgent:
     def reset(self, episode_id):
         self.todo = gt_answers(self.gt[episode_id]["actions"])
 
-    def __call__(self, instruction, frames, slots, episode_id):
+    def __call__(self, instruction, frames, slots, episode_id, poses=None):
         return (self.todo.pop(0) if self.todo else ANSWERS[0]), None, 0.0
 
 
@@ -122,32 +126,35 @@ class FixedAgent:
     def reset(self, episode_id):
         pass
 
-    def __call__(self, instruction, frames, slots, episode_id):
+    def __call__(self, instruction, frames, slots, episode_id, poses=None):
         return ANSWERS[3], None, 0.0
 
 
 class HttpAgent:
-    def __init__(self, url):
-        self.url = url.rstrip("/")
+    def __init__(self, url, send_poses=True):
+        self.url, self.send_poses = url.rstrip("/"), send_poses
         with urllib.request.urlopen(self.url + "/health", timeout=600) as r:
             print("student:", r.read().decode(), flush=True)
 
     def reset(self, episode_id):
         pass
 
-    def __call__(self, instruction, frames, slots, episode_id):
-        req = urllib.request.Request(self.url + "/decide", data=encode_request(instruction, frames, slots, episode_id),
+    def __call__(self, instruction, frames, slots, episode_id, poses=None):
+        body = encode_request(instruction, frames, slots, episode_id, poses if self.send_poses else None)
+        req = urllib.request.Request(self.url + "/decide", data=body,
                                      headers={"Content-Type": "application/octet-stream"})
         with urllib.request.urlopen(req, timeout=600) as r:
             return decode_response(r.read())
 
 
-def run_episode(env, agent, obs, num_frames=8):
-    """One episode with navila_trainer.py's loop. Returns the record of what the agent did."""
+def run_episode(env, agent, obs, num_frames=8, turn_deg=TURN_DEG):
+    """One episode with navila_trainer.py's loop. Returns the record of what the agent did, with the low-level
+    actions run ("actions", one digit each) and where the agent stood at every frame ("positions", x y z)."""
     ep = env.current_episode
     instruction = ep.instruction.instruction_text
     agent.reset(ep.episode_id)
-    past, queue = [], []
+    past, queue, moves = [], [], []
+    positions = [env.sim.get_agent_state().position.tolist()]
     answers, ms, unparsed = collections.Counter(), [], 0
     while not env.episode_over:
         if queue:
@@ -155,8 +162,10 @@ def run_episode(env, agent, obs, num_frames=8):
         else:
             frames = past + [obs["rgb"]]
             slots = frame_slots(len(frames), num_frames)
-            real = [(s, frames[f]) for s, f in enumerate(slots) if f >= 0]
-            answer, _, t = agent(instruction, [f for _, f in real], [s for s, _ in real], ep.episode_id)
+            real = [(s, f) for s, f in enumerate(slots) if f >= 0]
+            walk = dead_reckoning(moves, turn_deg)
+            answer, _, t = agent(instruction, [frames[f] for _, f in real], [s for s, _ in real], ep.episode_id,
+                                 walk[[f for _, f in real]])
             ms.append(t)
             actions = navila_actions(answer)
             if actions is None:              # NaVILA would crash here; count it and stop
@@ -167,7 +176,10 @@ def run_episode(env, agent, obs, num_frames=8):
             action, queue = actions[0], actions[1:]
         past.append(obs["rgb"])             # navila_trainer.py keeps the frame seen before each low-level step
         obs = env.step(action)
-    return {"decisions": sum(answers.values()), "answers": dict(answers), "ms": ms, "unparsed": unparsed}
+        moves.append(int(action))
+        positions.append(env.sim.get_agent_state().position.tolist())
+    return {"decisions": sum(answers.values()), "answers": dict(answers), "ms": ms, "unparsed": unparsed,
+            "actions": "".join(map(str, moves)), "positions": [[round(v, 3) for v in p] for p in positions]}
 
 
 def main():
@@ -201,7 +213,7 @@ def main():
     import habitat_extensions  # noqa: F401  (registers VLN-CE's task, measures and datasets)
 
     agent = {"gt": lambda: GtAgent(cfg, args.part), "fixed": FixedAgent,
-             "http": lambda: HttpAgent(args.url)}[args.agent]()
+             "http": lambda: HttpAgent(args.url, send_poses=not args.no_pose)}[args.agent]()
     env = habitat.Env(config=make_config(args, cfg, todo, args.part).TASK_CONFIG)
     started = time.time()
     with open(results, "a") as f:
@@ -209,7 +221,7 @@ def main():
             t = time.time()
             obs = env.reset()
             ep = env.current_episode
-            rec = run_episode(env, agent, obs)
+            rec = run_episode(env, agent, obs, turn_deg=args.turn_angle or TURN_DEG)
             metrics = {k: float(v) for k, v in env.get_metrics().items()
                        if isinstance(v, (int, float, np.integer, np.floating))}
             start = (ep.info or {}).get("geodesic_distance") if hasattr(ep, "info") else None

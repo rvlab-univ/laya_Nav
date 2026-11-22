@@ -265,7 +265,7 @@ nohup bash scripts/server/teacher_dagger.sh 2 > logs/teacher_dagger2.log 2>&1 &
 - 프레임 묶음의 체크섬을 확인하고 풀고, NaVILA 샤드 2개(`SHARDS`)로 라벨을 만들어 `runs/teacher_dagger2`에 합친다. 약 11시간이다. 멈췄으면 같은 명령을 다시 실행한다.
 - 학습에는 `--teacher runs/teacher runs/teacher_dagger2 --extra dagger2 data/dagger/round2/annotations.json`을 준다.
 
-### 6.7 H 실험: 과거 프레임 토큰 늘리기 (2026-11-20)
+### 6.7 H 실험과 P1: 과거 프레임 토큰 늘리기, 위치 기억 (2026-11-20, 11-22)
 
 과거 프레임 7장을 1토큰 대신 2×2 = 4토큰씩 보여 준다(`--grids 2 2`, 영상 토큰 11 → 32). 나머지는 D와 같다. 224 px 특징(`data/features/siglip2_g2`, 6.2절에서 만든 것)을 쓰고, R2R만 쓰고, `runs/D/last`에서 시작한다. 새로 만들 특징은 없다(`design_C_review.md` 5.10절).
 
@@ -280,18 +280,50 @@ bash scripts/server/status.sh
 | 실행 | 길이 | 바꾸는 것 | 비교 대상 |
 |---|---|---|---|
 | `H1` | 3,000 step | 과거 프레임 2×2 | `L0_r2r` |
+| `P1` | 3,000 step | H1 + 프레임마다 실행한 행동으로 계산한 위치(`--pose`, 5.11절). lane 1에서 H1 다음 | `H1` |
 | `H1_kd` | 3,000 step | H1 + NaVILA의 1순위가 정답인 행에만 교사 분포(`--teacher runs/teacher --teacher_agree_only`) | `H1` |
 | `H1_long` | 9,000 step | H1을 더 길게(R2R 1.4 epoch) | `H1` |
 
-- 셋이 동시에 돈다. 3,000 step 실험은 1시간 남짓, `H1_long`은 3~4시간이다(셋이 함께 돌 때 1.35~1.55 s/step 기준).
+- 셋이 동시에 돈다. 3,000 step 실험은 1시간 남짓이다. lane 1(H1 → P1)과 `H1_long`은 각각 3~4시간이다(셋이 함께 돌 때 1.35~1.55 s/step 기준).
 - `H1_kd`는 `runs/teacher`를 읽는다. RxR 교사 라벨(4절)의 합치기가 이 폴더를 다시 쓰므로, `extract_teacher_probs.py`가 돌고 있으면 시작하지 않고 로그에 그렇게 남긴다. 그때는 교사 라벨을 멈추거나(`pkill -u "$USER" -f extract_teacher_probs`, 나중에 같은 명령으로 이어진다) 끝나기를 기다린 뒤 같은 명령을 다시 실행한다.
 - 멈췄으면 같은 명령을 다시 실행한다. 끝난 실험(`<이름>.tar.gz`)은 건너뛰고, 멈춘 실험은 `runs/<이름>/last`에서 이어 간다.
-- 끝나면 `H1.tar.gz`, `H1_kd.tar.gz`, `H1_long.tar.gz`를 연구실 PC로 옮긴다. PC에서는 val_seen 400개로 고른다:
+- 끝나면 `H1.tar.gz`, `P1.tar.gz`, `H1_kd.tar.gz`, `H1_long.tar.gz`를 연구실 PC로 옮긴다. PC에서는 val_seen 400개로 고른다:
 
 ```bash
 SEEN=400 bash scripts/local_drive.sh L0_r2r            # 기준을 400개로 (한 번만, 약 40분)
 tar -xzf H1.tar.gz -C runs && SEEN=400 BASE=L0_r2r bash scripts/local_drive.sh H1    # 모델당 약 50분
+tar -xzf P1.tar.gz -C runs && SEEN=400 BASE=H1 bash scripts/local_drive.sh P1
+SEEN=400 POSE=off BASE=P1 bash scripts/local_drive.sh P1     # 같은 P1을 위치 없이: 위치를 실제로 쓰는지
 ```
+
+### 6.8 최종 모델 (2026-11-22, `design_C_review.md` 5.12절)
+
+후보 둘을 데이터를 모두 써서 길게 학습한다. 6.7절의 H 묶음은 돌리지 않는다.
+
+1. **(PC에서) 1회차 기록 올리기:** `data/dagger/round1/episodes.jsonl`(15 MB)을 서버의 `~/light_nav/data/dagger/round1/`에 올린다. `F_full`의 DAgger 위치에 쓴다.
+2. **1단계 (지금):**
+
+```bash
+cd ~/light_nav && git pull
+ls data/features/siglip2_g2/          # r2r.done, rxr.done, dagger1.done
+nohup bash -c 'SOURCES=rxr bash scripts/server/features.sh && bash scripts/server/final_runs.sh 1' \
+    > logs/final_1.log 2>&1 &
+tail -n 20 logs/final_1.log
+```
+
+- RxR 특징이 이미 있으면(`rxr.done`) 특징 단계는 저장된 에피소드를 건너뛰고 바로 끝난다. 없으면 1시간 안팎이다.
+
+- `F_base`(D 구조)와 `F_full`(과거 2×2 + 위치 + 맞은 답만 증류)이 나란히 돈다. 각각 36,000 step, 10~13시간이다. `F_base`를 손으로 먼저 시작했으면 그대로 두고 `F_full`만 시작한다.
+- 12,000 step마다 `runs/<이름>/step_<n>`이 남는다.
+
+3. **2단계 (`dagger2.tar`를 올린 뒤):** PC에서 `bash scripts/pack_dagger.sh 2` → `dagger2.tar`와 `dagger2.tar.sha256`을 `~/light_nav`에 올린다. 그다음:
+
+```bash
+nohup bash scripts/server/final_runs.sh 2 > logs/final_2.log 2>&1 &
+```
+
+- 체크섬을 확인하고 풀고, `F_base2`와 `F_full2`를 각 1단계 모델에서 12,000 step 학습한다(약 4시간).
+4. **PC 평가:** `tar -xzf F_full.tar.gz -C runs && SEEN=400 BASE=L0_r2r bash scripts/local_drive.sh F_full`.
 
 ## 진단
 

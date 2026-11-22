@@ -7,11 +7,17 @@
 # SEEN=400 drives 400 val_seen episodes instead (runs/eval/<name>/r2r_valseen_400, a superset of the 100), the size
 # models are picked on from 2026-11-20 (design_C_review.md 5.9); BASE (default D) is the run compared against.
 #   SEEN=400 bash scripts/local_drive.sh L0_r2r && SEEN=400 BASE=L0_r2r bash scripts/local_drive.sh H1
+# POSE=off sends no poses, so a student that reads them drives with every frame's pose unknown (5.11's check):
+# results in runs/eval/<name>/<part>_nopose, compared with the same student with poses.
+#   SEEN=400 POSE=off BASE=P1 bash scripts/local_drive.sh P1
 set -u
 NAME="${1:?run name (runs/<name>/last)}"
 PORT="${PORT:-8767}"
 SEEN="${SEEN:-100}"
 BASE="${BASE:-D}"
+POSE="${POSE:-on}"
+SUFFIX="" FLAGS=()
+[ "$POSE" = off ] && SUFFIX=_nopose FLAGS=(--no_pose)
 cd "$(dirname "$0")/.."
 export HF_HOME="$PWD/assets/hf_cache" TOKENIZERS_PARALLELISM=false
 mkdir -p logs
@@ -26,17 +32,18 @@ for _ in $(seq 1 100); do
     sleep 3
 done
 for part in val_seen val_unseen; do
-    n=100 out="runs/eval/$NAME/r2r_100"
-    [ "$part" = val_seen ] && n="$SEEN" out="runs/eval/$NAME/r2r_valseen_$SEEN"
+    n=100 out="runs/eval/$NAME/r2r_100$SUFFIX"
+    [ "$part" = val_seen ] && n="$SEEN" out="runs/eval/$NAME/r2r_valseen_$SEEN$SUFFIX"
     env_vlnce/bin/python scripts/eval_vlnce.py --split r2r --agent http --url "http://127.0.0.1:$PORT" \
-        --part "$part" --episodes "$n" --out "$out" 2>&1 | grep --line-buffered -E "episodes|Error|Traceback"
+        --part "$part" --episodes "$n" --out "$out" "${FLAGS[@]}" 2>&1 \
+        | grep --line-buffered -E "episodes|Error|Traceback"
 done
 for sub in "r2r_valseen_$SEEN" r2r_100; do
-    echo "== $sub ($BASE first)"
+    echo "== $sub$SUFFIX ($BASE/$sub first)"
     if [ -f "runs/eval/$BASE/$sub/episodes.jsonl" ]; then
-        env/bin/python scripts/eval_summary.py "runs/eval/$BASE/$sub" "runs/eval/$NAME/$sub" --pair
+        env/bin/python scripts/eval_summary.py "runs/eval/$BASE/$sub" "runs/eval/$NAME/$sub$SUFFIX" --pair
     else
-        echo "$BASE has not driven $sub: runs/eval/$NAME/$sub alone"
-        env/bin/python scripts/eval_summary.py "runs/eval/$NAME/$sub"
+        echo "$BASE has not driven $sub: runs/eval/$NAME/$sub$SUFFIX alone"
+        env/bin/python scripts/eval_summary.py "runs/eval/$NAME/$sub$SUFFIX"
     fi
 done

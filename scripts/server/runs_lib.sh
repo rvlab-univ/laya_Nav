@@ -1,5 +1,5 @@
 # Sourced after common.sh by l_runs.sh, grid_runs.sh, all_runs.sh and h_runs.sh: one experiment that is skipped once
-# finished (alone, or logged to logs/<name>.log), DAgger round 1 from the lab PC, and waiting for a file.
+# finished (alone, or logged to logs/<name>.log), a DAgger round from the lab PC, and waiting for a file.
 # ARGS (the calling script's arguments) go to every run.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -29,41 +29,42 @@ logged() {  # name, train.py arguments: the run, its output appended to logs/<na
 
 clamp() { local v="$1"; [ "$v" -lt "$2" ] && v="$2"; [ "$v" -gt "$3" ] && v="$3"; echo "$v"; }
 
-# Waits for dagger1.tar and dagger1.tar.sha256 in ~/light_nav (from the lab PC: scripts/pack_dagger.sh 1) until the
-# checksum matches (so the upload can go on meanwhile; at most WAIT_HOURS, default 12), then extracts the round into
-# data/. Needs FEATURES: the 224 px store the round's features belong to.
-dagger_round1() {
-    local tarf="$ROOT/dagger1.tar" waited=0 limit=$(( ${WAIT_HOURS:-12} * 3600 )) poll="${POLL:-300}" said=""
-    [ -f "$FEATURES/dagger1.done" ] && return
+# Waits for dagger<n>.tar and dagger<n>.tar.sha256 in ~/light_nav (from the lab PC: scripts/pack_dagger.sh <n>) until
+# the checksum matches (so the upload can go on meanwhile; at most WAIT_HOURS, default 12), then extracts the round
+# into data/. Needs FEATURES: the 224 px store the round's features belong to.
+dagger_round() {
+    local n="$1" tarf="$ROOT/dagger$1.tar" waited=0 limit=$(( ${WAIT_HOURS:-12} * 3600 )) poll="${POLL:-300}" said=""
+    [ -f "$FEATURES/dagger$n.done" ] && return
     while :; do
         if [ -f "$tarf" ] && [ -f "$tarf.sha256" ]; then
-            if (cd "$ROOT" && sha256sum -c --status dagger1.tar.sha256); then
+            if (cd "$ROOT" && sha256sum -c --status "dagger$n.tar.sha256"); then
                 break
             fi
-            [ "$said" = mismatch ] || log "dagger1.tar does not match dagger1.tar.sha256 yet: still uploading, or a broken copy (upload it again)"
+            [ "$said" = mismatch ] \
+                || log "dagger$n.tar does not match its .sha256 yet: still uploading, or a broken copy (upload it again)"
             said=mismatch
         else
-            [ "$said" = missing ] || log "L1 waits for dagger1.tar and dagger1.tar.sha256 in $ROOT (from the lab PC)"
+            [ "$said" = missing ] || log "waiting for dagger$n.tar and dagger$n.tar.sha256 in $ROOT (from the lab PC)"
             said=missing
         fi
         if [ "$waited" -ge "$limit" ]; then
-            log "no complete dagger1.tar after ${WAIT_HOURS:-12} h: L1 not run. Upload it, then rerun this script."
+            log "no complete dagger$n.tar after ${WAIT_HOURS:-12} h. Upload it, then rerun this script."
             exit 1
         fi
         sleep "$poll"
         waited=$(( waited + poll ))
     done
-    log "dagger1.tar checksum ok: extracting"
+    log "dagger$n.tar checksum ok: extracting"
     tar -xf "$tarf" -C "$ROOT"
     local want have
-    want="$(grep -o '"episodes": *[0-9]*' "$ROOT/data/dagger/round1/summary.json" | grep -o '[0-9]*$')"
-    have="$(find "$FEATURES/dagger1" -maxdepth 1 -name '*.npy' 2>/dev/null | wc -l)"
+    want="$(grep -o '"episodes": *[0-9]*' "$ROOT/data/dagger/round$n/summary.json" | grep -o '[0-9]*$')"
+    have="$(find "$FEATURES/dagger$n" -maxdepth 1 -name '*.npy' 2>/dev/null | wc -l)"
     if [ "$have" != "$want" ]; then
-        echo "dagger1: $have episode features in $FEATURES/dagger1, the round has $want (extracted under $ROOT/data)"
+        echo "dagger$n: $have episode features in $FEATURES/dagger$n, the round has $want (extracted under $ROOT/data)"
         exit 1
     fi
-    touch "$FEATURES/dagger1.done"
-    log "dagger1: $have episodes ready (dagger1.tar can be deleted)"
+    touch "$FEATURES/dagger$n.done"
+    log "dagger$n: $have episodes ready (dagger$n.tar can be deleted)"
 }
 
 wait_for() {  # file, what it is, file that means it will never come (optional): at most WAIT_HOURS (default 12)

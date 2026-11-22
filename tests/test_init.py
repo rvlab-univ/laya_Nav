@@ -12,7 +12,7 @@ VOCAB = ["bathroom", "sofa", "living room", "chairs", "kitchen", "bed"]
 INSTRUCTIONS = ["Walk past the sofa into the bathroom and stop.", "Turn right at the kitchen and wait by the bed."]
 
 
-def student(tok, image_size, cur_grid, encoder, hist_grid=1, seed=0, vocab=VOCAB):
+def student(tok, image_size, cur_grid, encoder, hist_grid=1, seed=0, vocab=VOCAB, pose=False):
     """A tagged tiny student on a vision tower of 4-pixel patches (image_size / 4 patches a side)."""
     from transformers import SiglipVisionConfig, SiglipVisionModel
 
@@ -23,6 +23,7 @@ def student(tok, image_size, cur_grid, encoder, hist_grid=1, seed=0, vocab=VOCAB
     cfg = base.cfg
     cfg.vision_encoder, cfg.image_size = encoder, image_size
     cfg.cur_grid, cfg.hist_grid, cfg.tags_current, cfg.tags_history, cfg.tag_vocab = cur_grid, hist_grid, 3, 1, list(vocab)
+    cfg.pose = pose
     model = LayaNative(cfg, base.dm, vision)
     model.tag_text.copy_(F.normalize(torch.randn(len(vocab), 32), dim=-1))
     model.set_tag_stats(torch.randn(50, len(vocab)))

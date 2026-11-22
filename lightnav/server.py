@@ -3,7 +3,7 @@
     HF_HOME=assets/hf_cache env/bin/python -m lightnav.server --ckpt runs/N1/last --port 8765
 
 POST /decide  body: lightnav.vlnce.encode_request(...)  ->  {"answer", "probs", "ms"}
-GET  /health  ->  {"ckpt", "params", "device", "tau_stop", "decisions"}
+GET  /health  ->  {"ckpt", "params", "device", "tau_stop", "pose", "decisions"}
 Requests are answered one at a time on one GPU.
 """
 import argparse
@@ -38,7 +38,7 @@ def make_handler(agent, info):
                 return
             req = decode_request(self.rfile.read(int(self.headers["Content-Length"])))
             with lock:
-                answer, probs, ms = agent.decide(req["instruction"], req["frames"], req["slots"])
+                answer, probs, ms = agent.decide(req["instruction"], req["frames"], req["slots"], req["poses"])
                 info["decisions"] += 1
             self._send(200, encode_response(answer, probs, ms))
 
@@ -57,7 +57,8 @@ def main():
     p.add_argument("--tau_stop", type=float, default=None, help="stop only when P(stop) exceeds this")
     args = p.parse_args()
     agent = StudentAgent(args.ckpt, args.device, args.tau_stop)
-    info = {"ckpt": args.ckpt, "params": agent.params, "device": args.device, "tau_stop": args.tau_stop, "decisions": 0}
+    info = {"ckpt": args.ckpt, "params": agent.params, "device": args.device, "tau_stop": args.tau_stop,
+            "pose": agent.cfg.pose, "decisions": 0}
     print("student ready on %s:%d: %s" % (args.host, args.port, json.dumps(info)), flush=True)
     HTTPServer((args.host, args.port), make_handler(agent, info)).serve_forever()
 
